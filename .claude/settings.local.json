@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m streamlit run app/streamlit_app.py --server.headless true --server.port 8501)",
+      "Bash(pkill -f streamlit)",
+      "Bash(python -c \"import app.streamlit_app\")",
+      "Bash(python test_json_fix.py)",
+      "Bash(python -m py_compile app/streamlit_app.py app/services/pdf_processor.py)",
+      "Bash(python test_external_images.py)",
+      "Bash(python test_image_path_fix.py)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

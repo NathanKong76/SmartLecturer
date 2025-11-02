@@ -1,17 +1,55 @@
-from __future__ import annotations
-
-import io
-import asyncio
-import json
-import os
-from typing import Dict, List, Tuple, Optional, Callable
-import re
-
-import fitz  # PyMuPDF
-from PIL import Image
-from markdown import markdown
-
-from .gemini_client import GeminiClient
+from __future__ import annotations
+
+import io
+import asyncio
+import json
+import os
+import base64
+from typing import Dict, List, Tuple, Optional, Callable
+import re
+
+import fitz  # PyMuPDF
+from PIL import Image
+from markdown import markdown
+
+from .gemini_client import GeminiClient
+from .logger import get_logger
+
+logger = get_logger()
+
+
+def safe_utf8_loads(json_bytes: bytes, source: str = "unknown") -> dict:
+	"""
+	安全地从字节数据加载JSON，处理UTF-8编码问题
+	
+	Args:
+		json_bytes: JSON文件的字节数据
+		source: 数据源描述，用于错误信息
+	
+	Returns:
+		解析后的JSON数据字典
+	
+	Raises:
+		json.JSONDecodeError: JSON解析失败
+	"""
+	try:
+		# 尝试直接解析
+		return json.loads(json_bytes)
+	except json.JSONDecodeError:
+		# 如果失败，尝试使用UTF-8解码
+		try:
+			json_str = json_bytes.decode('utf-8')
+			return json.loads(json_str)
+		except UnicodeDecodeError:
+			# 如果UTF-8解码失败，尝试其他常见编码
+			for encoding in ['utf-8-sig', 'gbk', 'gb2312', 'latin1']:
+				try:
+					json_str = json_bytes.decode(encoding)
+					return json.loads(json_str)
+				except (UnicodeDecodeError, json.JSONDecodeError):
+					continue
+			# 所有编码都失败，抛出原始错误
+			raise json.JSONDecodeError(f"无法使用任何编码解析JSON文件: {source}", json_bytes, 0)
 
 
 # 判空：去除空白与标点等装饰字符后长度是否小于阈值
@@ -387,11 +425,9 @@ def generate_explanations(src_bytes: bytes, api_key: str, model_name: str, user_
 			done += 1
 			if on_progress:
 				on_progress(done, total)
-			if on_log:
-				ok = (r[1] is not None) and (r[3] is None)
-				on_log(f"第 {r[0]+1} 页处理完成：{'成功' if ok else '失败'}")
-		return results
-
+			on_log(f"第 {r[0]+1} 页处理完成：{'成功' if ok else '失败'}")
+		return results
+
 	async def run_all_retry(to_retry: List[int]):
 		sem = asyncio.Semaphore(concurrency)
 		results2: List[Tuple[int, Optional[str], bytes, Optional[Exception]]] = []
@@ -444,6 +480,230 @@ def generate_explanations(src_bytes: bytes, api_key: str, model_name: str, user_
 
 	src_doc.close()
 	return explanations, previews, failed_pages
+
+
+def create_page_screenshot_markdown(page_num: int, screenshot_bytes: bytes,
+                                   explanation: str, embed_images: bool = True,
+                                   image_path: Optional[str] = None,
+                                   images_dir_name: Optional[str] = None) -> str:
+	"""
+	生成单页的markdown内容，包含截图和讲解
+
+	Args:
+		page_num: 页码（从1开始）
+		screenshot_bytes: 页面截图的PNG字节数据
+		explanation: AI讲解内容
+		embed_images: 是否将图片base64嵌入到markdown中，否则使用占位符
+		image_path: 外部图片文件路径（仅在embed_images=False时使用）
+		images_dir_name: 图片目录名称（仅在embed_images=False时使用），如 "Week12_images"
+
+	Returns:
+		单页markdown字符串
+	"""
+	# 生成页码标题
+	markdown_content = f"## 第{page_num}页\n\n"
+
+	# 添加截图
+	if embed_images:
+		# 将图片转换为base64嵌入
+		base64_data = base64.b64encode(screenshot_bytes).decode('utf-8')
+		markdown_content += f"![第{page_num}页截图](data:image/png;base64,{base64_data})\n\n"
+	else:
+		# 使用相对路径引用图片
+		if images_dir_name:
+			# 使用动态路径 {images_dir_name}/page_X.png
+			markdown_content += f"![第{page_num}页截图]({images_dir_name}/page_{page_num}.png)\n\n"
+		elif image_path:
+			# 使用绝对路径的basename作为备选
+			markdown_content += f"![第{page_num}页截图]({os.path.basename(image_path)})\n\n"
+		else:
+			# 使用占位符
+			markdown_content += f"![第{page_num}页截图](page_{page_num}.png)\n\n"
+
+	# 添加AI讲解
+	if explanation and explanation.strip():
+		markdown_content += f"**AI讲解：**\n\n{explanation}\n\n"
+	else:
+		markdown_content += "**AI讲解：**\n\n暂无讲解内容\n\n"
+
+	# 添加分隔线
+	markdown_content += "---\n\n"
+
+	return markdown_content
+
+
+def generate_markdown_with_screenshots(src_bytes: bytes, explanations: Dict[int, str],
+                                      screenshot_dpi: int = 150, embed_images: bool = True,
+                                      title: str = "PDF文档讲解",
+                                      images_dir: Optional[str] = None) -> Tuple[str, Optional[str]]:
+	"""
+	生成包含截图和讲解的完整markdown文档
+
+	Args:
+		src_bytes: PDF文件字节数据
+		explanations: 讲解内容字典 {页码: 讲解内容}
+		screenshot_dpi: 截图DPI
+		embed_images: 是否嵌入base64图片
+		title: 文档标题
+		images_dir: 外部图片保存目录（仅在embed_images=False时使用）
+
+	Returns:
+		(markdown字符串, images_dir路径)
+	"""
+	logger.info('开始生成markdown文档，标题: %s, 总页数: %d, 截图DPI: %d, 嵌入图片: %s',
+				title, len(explanations), screenshot_dpi, '是' if embed_images else '否')
+
+	# 如果不嵌入图片，创建图片目录
+	if not embed_images and images_dir:
+		os.makedirs(images_dir, exist_ok=True)
+		logger.info('创建图片目录: %s', images_dir)
+
+	# 生成文档标题
+	markdown_content = f"# {title}\n\n"
+
+	# 打开PDF文件
+	src_doc = fitz.open(stream=src_bytes, filetype="pdf")
+	total_pages = src_doc.page_count
+
+	try:
+		logger.debug('PDF文件包含%d页，开始为每页生成markdown内容', total_pages)
+
+		# 为每一页生成内容
+		for page_num in range(total_pages):
+			logger.debug('正在处理第%d页', page_num + 1)
+
+			# 生成页面截图
+			screenshot_bytes = _page_png_bytes(src_doc, page_num, screenshot_dpi)
+
+			# 获取讲解内容
+			explanation = explanations.get(page_num, "")
+			has_explanation = bool(explanation and explanation.strip())
+
+			logger.debug('第%d页截图生成完成，大小: %d bytes, %s讲解内容',
+						page_num + 1, len(screenshot_bytes), '有' if has_explanation else '无')
+
+			# 如果不嵌入图片，保存截图到文件
+			image_path = None
+			images_dir_name = None
+			if not embed_images and images_dir:
+				image_path = os.path.join(images_dir, f"page_{page_num + 1}.png")
+				# 提取图片目录名称
+				images_dir_name = os.path.basename(images_dir)
+				with open(image_path, 'wb') as f:
+					f.write(screenshot_bytes)
+				logger.debug('保存截图到: %s', image_path)
+
+			# 生成单页markdown
+			page_markdown = create_page_screenshot_markdown(
+				page_num + 1,  # 页码从1开始
+				screenshot_bytes,
+				explanation,
+				embed_images,
+				image_path,
+				images_dir_name
+			)
+
+			markdown_content += page_markdown
+
+		# 添加文档结尾信息
+		markdown_content += f"\n---\n\n**文档信息：**\n"
+		markdown_content += f"- 总页数：{total_pages}\n"
+		markdown_content += f"- 生成时间：{__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+		markdown_content += f"- 截图DPI：{screenshot_dpi}\n"
+		markdown_content += f"- 图片嵌入：{'是' if embed_images else '否'}\n"
+		if not embed_images and images_dir:
+			images_dir_name = os.path.basename(images_dir)
+			markdown_content += f"- 图片文件夹：{images_dir_name}/\n"
+
+		logger.info('markdown文档生成完成，总长度: %d 字符', len(markdown_content))
+		return markdown_content, images_dir if not embed_images else None
+
+	except Exception as e:
+		logger.error('markdown文档生成失败: %s', e, exc_info=True)
+		raise
+	finally:
+		src_doc.close()
+
+
+def process_markdown_mode(src_bytes: bytes, api_key: str, model_name: str, user_prompt: str,
+                         temperature: float, max_tokens: int, dpi: int, screenshot_dpi: int,
+                         concurrency: int, rpm_limit: int, tpm_budget: int, rpd_limit: int,
+                         embed_images: bool = True, title: str = "PDF文档讲解",
+                         images_dir: Optional[str] = None,
+                         use_context: bool = False, context_prompt: Optional[str] = None,
+                         on_progress: Optional[Callable[[int, int], None]] = None,
+                         on_log: Optional[Callable[[str], None]] = None) -> Tuple[str, Dict[int, str], List[int], Optional[str]]:
+	"""
+	处理PDF并生成markdown格式的讲解文档
+
+	Args:
+		src_bytes: PDF文件字节数据
+		api_key: Gemini API密钥
+		model_name: 模型名称
+		user_prompt: 用户提示词
+		temperature: 温度参数
+		max_tokens: 最大token数
+		dpi: AI处理用的DPI
+		screenshot_dpi: 截图DPI
+		concurrency: 并发数
+		rpm_limit: RPM限制
+		tpm_budget: TPM预算
+		rpd_limit: RPD限制
+		embed_images: 是否嵌入base64图片
+		title: 文档标题
+		images_dir: 外部图片保存目录
+		use_context: 是否使用上下文
+		context_prompt: 上下文提示词
+		on_progress: 进度回调
+		on_log: 日志回调
+
+	Returns:
+		(markdown内容, 讲解字典, 失败页面列表, images_dir路径)
+	"""
+	logger.info('开始处理markdown模式，文档标题: %s, 嵌入图片: %s, 截图DPI: %d',
+				title, '是' if embed_images else '否', screenshot_dpi)
+
+	try:
+		# 先生成讲解
+		logger.debug('开始生成AI讲解内容')
+		explanations, previews, failed_pages = generate_explanations(
+			src_bytes=src_bytes,
+			api_key=api_key,
+			model_name=model_name,
+			user_prompt=user_prompt,
+			temperature=temperature,
+			max_tokens=max_tokens,
+			dpi=dpi,
+			concurrency=concurrency,
+			rpm_limit=rpm_limit,
+			tpm_budget=tpm_budget,
+			rpd_limit=rpd_limit,
+			on_progress=on_progress,
+			on_log=on_log,
+			use_context=use_context,
+			context_prompt=context_prompt
+		)
+
+		logger.info('AI讲解生成完成，有效讲解页数: %d, 失败页数: %d',
+					len(explanations), len(failed_pages))
+
+		# 生成markdown文档
+		logger.debug('开始生成markdown文档')
+		markdown_content, images_dir_return = generate_markdown_with_screenshots(
+			src_bytes=src_bytes,
+			explanations=explanations,
+			screenshot_dpi=screenshot_dpi,
+			embed_images=embed_images,
+			title=title,
+			images_dir=images_dir
+		)
+
+		logger.info('markdown模式处理完成，文档总长度: %d 字符', len(markdown_content))
+		return markdown_content, explanations, failed_pages, images_dir_return
+
+	except Exception as e:
+		logger.error('markdown模式处理失败: %s', e, exc_info=True)
+		raise
 
 
 def compose_pdf(src_bytes: bytes, explanations: Dict[int, str], right_ratio: float, font_size: int,
@@ -546,20 +806,31 @@ def batch_recompose_from_json(pdf_files: List[Tuple[str, bytes]], json_files: Li
 	Returns:
 		处理结果字典
 	"""
+	logger.info('开始批量重新合成PDF，PDF文件数: %d, JSON文件数: %d, 字体大小: %d',
+				len(pdf_files), len(json_files), font_size)
+
 	# 提取文件名列表用于匹配
 	pdf_filenames = [name for name, _ in pdf_files]
 	json_filenames = [name for name, _ in json_files]
 
+	logger.debug('PDF文件名列表: %s', pdf_filenames)
+	logger.debug('JSON文件名列表: %s', json_filenames)
+
 	# 智能匹配文件
 	matches = match_pdf_json_files(pdf_filenames, json_filenames)
+	logger.info('文件匹配完成，匹配对数: %d', len(matches))
 
 	# 创建文件名到内容的映射
 	pdf_content_map = {name: content for name, content in pdf_files}
 	json_content_map = {name: content for name, content in json_files}
 
 	results = {}
+	completed_count = 0
+	failed_count = 0
 
 	for pdf_filename, matched_json in matches.items():
+		logger.debug('处理PDF文件: %s', pdf_filename)
+
 		result = {
 			"status": "pending",
 			"pdf_bytes": None,
@@ -571,18 +842,23 @@ def batch_recompose_from_json(pdf_files: List[Tuple[str, bytes]], json_files: Li
 			pdf_bytes = pdf_content_map[pdf_filename]
 
 			if matched_json is None:
+				logger.warning('PDF文件 %s 未找到匹配的JSON文件', pdf_filename)
 				result["status"] = "failed"
 				result["error"] = "未找到匹配的JSON文件"
+				failed_count += 1
 			else:
+				logger.debug('为PDF文件 %s 找到匹配的JSON文件: %s', pdf_filename, matched_json)
 				json_bytes = json_content_map[matched_json]
 
 				# 解析JSON
 				try:
-					json_data = json.loads(json_bytes.decode('utf-8'))
+					json_data = safe_utf8_loads(json_bytes, source=matched_json)
 					# 转换键为整数
 					explanations = {int(k): str(v) for k, v in json_data.items()}
+					logger.debug('JSON文件 %s 解析成功，包含 %d 个讲解条目', matched_json, len(explanations))
 
 					# 重新合成PDF
+					logger.debug('开始重新合成PDF文件: %s', pdf_filename)
 					result_pdf = compose_pdf(
 						pdf_bytes,
 						explanations,
@@ -594,21 +870,144 @@ def batch_recompose_from_json(pdf_files: List[Tuple[str, bytes]], json_files: Li
 						column_padding=column_padding
 					)
 
+					logger.debug('PDF文件 %s 重新合成成功，大小: %d bytes', pdf_filename, len(result_pdf))
 					result["status"] = "completed"
 					result["pdf_bytes"] = result_pdf
 					result["explanations"] = explanations
+					completed_count += 1
 
 				except json.JSONDecodeError as e:
+					logger.error('JSON文件 %s 解析失败: %s', matched_json, e)
 					result["status"] = "failed"
 					result["error"] = f"JSON解析失败: {str(e)}"
+					failed_count += 1
 				except Exception as e:
+					logger.error('PDF文件 %s 合成失败: %s', pdf_filename, e, exc_info=True)
 					result["status"] = "failed"
 					result["error"] = f"PDF合成失败: {str(e)}"
+					failed_count += 1
 
 		except Exception as e:
+			logger.error('处理PDF文件 %s 时发生未知错误: %s', pdf_filename, e, exc_info=True)
 			result["status"] = "failed"
 			result["error"] = f"处理失败: {str(e)}"
+			failed_count += 1
 
 		results[pdf_filename] = result
 
+	logger.info('批量重新合成PDF完成，成功: %d, 失败: %d, 总计: %d',
+				completed_count, failed_count, len(results))
+	return results
+
+
+async def batch_recompose_from_json_async(pdf_files: List[Tuple[str, bytes]], json_files: List[Tuple[str, bytes]],
+										right_ratio: float, font_size: int,
+										font_path: Optional[str] = None,
+										render_mode: str = "text", line_spacing: float = 1.4, column_padding: int = 10) -> Dict[str, Dict]:
+	"""
+	异步批量根据JSON文件重新合成PDF
+
+	Args:
+		pdf_files: [(filename, bytes), ...] PDF文件列表
+		json_files: [(filename, bytes), ...] JSON文件列表
+		right_ratio: 右侧留白比例
+		font_size: 字体大小
+		font_path: 字体文件路径
+		render_mode: 渲染模式
+		line_spacing: 行间距
+
+	Returns:
+		处理结果字典
+	"""
+	logger.info('开始异步批量重新合成PDF，PDF文件数: %d, JSON文件数: %d, 字体大小: %d',
+				len(pdf_files), len(json_files), font_size)
+
+	# 提取文件名列表用于匹配
+	pdf_filenames = [name for name, _ in pdf_files]
+	json_filenames = [name for name, _ in json_files]
+
+	logger.debug('PDF文件名列表: %s', pdf_filenames)
+	logger.debug('JSON文件名列表: %s', json_filenames)
+
+	# 智能匹配文件
+	matches = match_pdf_json_files(pdf_filenames, json_filenames)
+	logger.info('文件匹配完成，匹配对数: %d', len(matches))
+
+	# 创建文件名到内容的映射
+	pdf_content_map = {name: content for name, content in pdf_files}
+	json_content_map = {name: content for name, content in json_files}
+
+	results = {}
+	completed_count = 0
+	failed_count = 0
+
+	for pdf_filename, matched_json in matches.items():
+		logger.debug('处理PDF文件: %s', pdf_filename)
+
+		result = {
+			"status": "pending",
+			"pdf_bytes": None,
+			"explanations": {},
+			"error": None
+		}
+
+		try:
+			pdf_bytes = pdf_content_map[pdf_filename]
+
+			if matched_json is None:
+				logger.warning('PDF文件 %s 未找到匹配的JSON文件', pdf_filename)
+				result["status"] = "failed"
+				result["error"] = "未找到匹配的JSON文件"
+				failed_count += 1
+			else:
+				logger.debug('为PDF文件 %s 找到匹配的JSON文件: %s', pdf_filename, matched_json)
+				json_bytes = json_content_map[matched_json]
+
+				# 解析JSON
+				try:
+					json_data = safe_utf8_loads(json_bytes, source=matched_json)
+					# 转换键为整数
+					explanations = {int(k): str(v) for k, v in json_data.items()}
+					logger.debug('JSON文件 %s 解析成功，包含 %d 个讲解条目', matched_json, len(explanations))
+
+					# 重新合成PDF
+					logger.debug('开始重新合成PDF文件: %s', pdf_filename)
+					result_pdf = compose_pdf(
+						pdf_bytes,
+						explanations,
+						right_ratio,
+						font_size,
+						font_path=font_path,
+						render_mode=render_mode,
+						line_spacing=line_spacing,
+						column_padding=column_padding
+					)
+
+					logger.debug('PDF文件 %s 重新合成成功，大小: %d bytes', pdf_filename, len(result_pdf))
+					result["status"] = "completed"
+					result["pdf_bytes"] = result_pdf
+					result["explanations"] = explanations
+					completed_count += 1
+
+				except json.JSONDecodeError as e:
+					logger.error('JSON文件 %s 解析失败: %s', matched_json, e)
+					result["status"] = "failed"
+					result["error"] = f"JSON解析失败: {str(e)}"
+					failed_count += 1
+				except Exception as e:
+					logger.error('PDF文件 %s 合成失败: %s', pdf_filename, e, exc_info=True)
+					result["status"] = "failed"
+					result["error"] = f"PDF合成失败: {str(e)}"
+					failed_count += 1
+
+		except Exception as e:
+			logger.error('处理PDF文件 %s 时发生未知错误: %s', pdf_filename, e, exc_info=True)
+			result["status"] = "failed"
+			result["error"] = f"处理失败: {str(e)}"
+			failed_count += 1
+
+		results[pdf_filename] = result
+
+	logger.info('异步批量重新合成PDF完成，成功: %d, 失败: %d, 总计: %d',
+				completed_count, failed_count, len(results))
 	return results
