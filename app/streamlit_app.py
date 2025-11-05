@@ -50,80 +50,230 @@ def setup_page():
 
 def sidebar_form():
 	with st.sidebar:
-		st.header("参数配置")
-		api_key = st.text_input("GEMINI_API_KEY", value=os.getenv('GEMINI_API_KEY'),type="password")
-		model_name = st.text_input("模型名", value="gemini-2.5-pro")
-		temperature = st.slider("温度", 0.0, 1.0, 0.4, 0.1)
-		max_tokens = st.number_input("最大输出 tokens", min_value=256, max_value=8192, value=4096, step=256)
-		dpi = st.number_input("渲染DPI(仅供LLM)", min_value=96, max_value=300, value=180, step=12)
-		right_ratio = st.slider("右侧留白比例", 0.2, 0.6, 0.48, 0.01)
-		font_size = st.number_input("右栏字体大小", min_value=8, max_value=20, value=20, step=1)
-		line_spacing = st.slider("讲解文本行距", 0.6, 2.0, 1.2, 0.1)
-		column_padding = st.slider("栏内边距(像素)", 2, 16, 10, 1, help="控制每一栏左右内边距，防止文字被切边")
-		concurrency = st.slider("并发页数", 1,100, 50, 1)
-		rpm_limit = st.number_input("RPM 上限(请求/分钟)", min_value=10, max_value=5000, value=150, step=10)
-		tpm_budget = st.number_input("TPM 预算(令牌/分钟)", min_value=100000, max_value=20000000, value=2000000, step=100000)
-		rpd_limit = st.number_input("RPD 上限(请求/天)", min_value=100, max_value=100000, value=10000, step=100)
-		user_prompt = st.text_area("讲解风格/要求(系统提示)", value="请用中文讲解本页pdf，关键词给出英文，讲解详尽，语言简洁易懂。讲解让人一看就懂，便于快速学习。请避免不必要的换行，使页面保持紧凑。")
-		# 字体选择下拉框
-		try:
-			from app.services.font_helper import get_windows_cjk_fonts
-			available_fonts = get_windows_cjk_fonts()
-			font_options = [font[0] for font in available_fonts]
-			# 查找 SimHei 的索引，如果没有则使用第一个
-			try:
-				default_index = font_options.index("SimHei")
-			except ValueError:
-				default_index = 0
-			cjk_font_name = st.selectbox("CJK 字体", font_options, index=default_index, 
-			                            help="选择用于显示中文的字体")
-		except Exception as e:
-			st.warning(f"无法检测系统字体，使用默认字体: {e}")
-			cjk_font_name = "SimHei"
-		render_mode = st.selectbox(
-			"右栏渲染方式", 
-			["text", "markdown", "pandoc"], 
-			index=1,
-			help="text: 普通文本模式\nmarkdown: 使用 PyMuPDF 的 htmlbox 渲染 Markdown\npandoc: 使用 Pandoc + LaTeX 生成高质量 PDF（需要安装 Pandoc 和 MiKTeX）"
+		st.header("⚙️ 参数配置")
+		
+		# ============================================
+		# 1. 输出模式选择 - 放在最顶部
+		# ============================================
+		st.subheader("📤 输出模式")
+		output_mode = st.radio(
+			"选择输出格式",
+			["PDF讲解版", "Markdown截图讲解", "HTML截图版"],
+			help="PDF讲解版：在PDF右侧添加讲解文字\nMarkdown截图讲解：生成包含页面截图和讲解的markdown文档\nHTML截图版：生成单个HTML文件，左侧显示PDF截图，右侧显示多栏markdown渲染讲解"
 		)
-
-	st.divider()
-	st.subheader("输出模式选择")
-	output_mode = st.radio(
-		"选择输出格式",
-		["Markdown截图讲解","PDF讲解版","HTML截图版"],
-		help="PDF讲解版：在PDF右侧添加讲解文字\nMarkdown截图讲解：生成包含页面截图和讲解的markdown文档\nHTML截图版：生成单个HTML文件，左侧显示PDF截图，右侧显示多栏markdown渲染讲解"
-	)
-
-	# Markdown模式的参数
-	if output_mode == "Markdown截图讲解":
-		st.subheader("📝 Markdown参数")
-		screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
-		embed_images = st.checkbox("嵌入图片到Markdown", value=False, help="将截图base64编码嵌入markdown文件，否则使用外部图片文件")
-		markdown_title = st.text_input("文档标题", value="PDF文档讲解")
-		html_column_count = 2
-		html_column_gap = 20
-		html_show_column_rule = True
-	elif output_mode == "HTML截图版":
-		st.subheader("🌐 HTML截图版参数")
-		screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
-		html_column_count = st.slider("分栏数量", 1, 3, 2, 1, help="讲解内容的分栏数量，类似Word分栏排版")
-		html_column_gap = st.slider("栏间距(px)", 10, 40, 20, 2, help="分栏之间的间距")
-		html_show_column_rule = st.checkbox("显示栏间分隔线", value=True, help="在分栏之间显示分隔线")
-		markdown_title = st.text_input("文档标题", value="PDF文档讲解")
-		embed_images = True
-	else:
-		screenshot_dpi = 150
-		embed_images = True
-		markdown_title = "PDF文档讲解"
-		html_column_count = 2
-		html_column_gap = 20
-		html_show_column_rule = True
-	
-	st.divider()
-	st.subheader("上下文增强")
-	use_context = st.checkbox("启用前后各1页上下文", value=False, help="启用后，LLM将同时看到前一页、当前页和后一页的内容，提高讲解连贯性。会增加API调用成本。")
-	context_prompt_text = st.text_area("上下文提示词", value="你将看到前一页、当前页和后一页的内容。请结合上下文信息，生成连贯的讲解。当前页是重点讲解页面，你不需要跟我讲上一页、下一页讲了什么。", disabled=not use_context, help="独立的上下文说明提示词，用于指导LLM如何处理多页内容。")
+		
+		st.divider()
+		
+		# ============================================
+		# 2. 上下文增强 - 对所有模式可用
+		# ============================================
+		st.subheader("🧠 上下文增强")
+		use_context = st.checkbox(
+			"启用前后各1页上下文", 
+			value=False, 
+			help="启用后，LLM将同时看到前一页、当前页和后一页的内容，提高讲解连贯性。会增加API调用成本。"
+		)
+		context_prompt_text = st.text_area(
+			"上下文提示词", 
+			value="你将看到前一页、当前页和后一页的内容。请结合上下文信息，生成连贯的讲解。当前页是重点讲解页面，你不需要跟我讲上一页、下一页讲了什么。", 
+			disabled=not use_context, 
+			help="独立的上下文说明提示词，用于指导LLM如何处理多页内容。"
+		)
+		
+		st.divider()
+		
+		# ============================================
+		# 3. 模式特定参数
+		# ============================================
+		if output_mode == "Markdown截图讲解":
+			st.subheader("📝 Markdown 参数")
+			screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
+			embed_images = st.checkbox("嵌入图片到Markdown", value=False, help="将截图base64编码嵌入markdown文件，否则使用外部图片文件")
+			markdown_title = st.text_input("文档标题", value="PDF文档讲解")
+			# 默认值用于非Markdown模式
+			html_column_count = 2
+			html_column_gap = 20
+			html_show_column_rule = True
+			st.divider()
+		elif output_mode == "HTML截图版":
+			st.subheader("🌐 HTML 截图版参数")
+			screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
+			html_column_count = st.slider("分栏数量", 1, 3, 2, 1, help="讲解内容的分栏数量，类似Word分栏排版")
+			html_column_gap = st.slider("栏间距(px)", 10, 40, 20, 2, help="分栏之间的间距")
+			html_show_column_rule = st.checkbox("显示栏间分隔线", value=True, help="在分栏之间显示分隔线")
+			markdown_title = st.text_input("文档标题", value="PDF文档讲解")
+			embed_images = True
+			st.divider()
+		else:  # PDF讲解版
+			# PDF模式的默认值
+			screenshot_dpi = 150
+			embed_images = True
+			markdown_title = "PDF文档讲解"
+			html_column_count = 2
+			html_column_gap = 20
+			html_show_column_rule = True
+		
+		# ============================================
+		# 4. API 配置
+		# ============================================
+		with st.expander("🔑 API 配置", expanded=True):
+			api_key = st.text_input(
+				"GEMINI_API_KEY", 
+				value=os.getenv('GEMINI_API_KEY'),
+				type="password",
+				help="您的 Gemini API 密钥"
+			)
+			model_name = st.text_input(
+				"模型名称", 
+				value="gemini-2.5-pro",
+				help="使用的 Gemini 模型"
+			)
+			
+			col1, col2 = st.columns(2)
+			with col1:
+				temperature = st.slider(
+					"温度", 
+					0.0, 1.0, 0.4, 0.1,
+					help="控制输出随机性"
+				)
+			with col2:
+				max_tokens = st.number_input(
+					"最大输出 Tokens", 
+					min_value=256, 
+					max_value=8192, 
+					value=4096, 
+					step=256,
+					help="限制单次响应长度"
+				)
+		
+		# ============================================
+		# 5. 性能配置
+		# ============================================
+		with st.expander("⚡ 性能配置", expanded=True):
+			col1, col2 = st.columns(2)
+			with col1:
+				concurrency = st.slider(
+					"并发页数", 
+					1, 100, 50, 1,
+					help="同时处理的页面数量"
+				)
+			with col2:
+				dpi = st.number_input(
+					"渲染DPI", 
+					min_value=96, 
+					max_value=300, 
+					value=180, 
+					step=12,
+					help="页面渲染质量（仅供LLM）"
+				)
+			
+			rpm_limit = st.number_input(
+				"RPM 上限 (请求/分钟)", 
+				min_value=10, 
+				max_value=5000, 
+				value=150, 
+				step=10,
+				help="每分钟请求数限制"
+			)
+			
+			col1, col2 = st.columns(2)
+			with col1:
+				tpm_budget = st.number_input(
+					"TPM 预算", 
+					min_value=100000, 
+					max_value=20000000, 
+					value=2000000, 
+					step=100000,
+					help="每分钟 Token 预算"
+				)
+			with col2:
+				rpd_limit = st.number_input(
+					"RPD 上限", 
+					min_value=100, 
+					max_value=100000, 
+					value=10000, 
+					step=100,
+					help="每天请求数限制"
+				)
+		
+		# ============================================
+		# 6. 高级排版配置 - 默认折叠
+		# ============================================
+		with st.expander("🎨 高级排版配置", expanded=False):
+			# PDF模式专属参数
+			if output_mode == "PDF讲解版":
+				col1, col2 = st.columns(2)
+				with col1:
+					right_ratio = st.slider(
+						"右侧留白比例", 
+						0.2, 0.6, 0.48, 0.01,
+						help="右侧讲解区域占页面宽度比例"
+					)
+				with col2:
+					font_size = st.number_input(
+						"右栏字体大小", 
+						min_value=8, 
+						max_value=20, 
+						value=20, 
+						step=1,
+						help="讲解文字的字体大小"
+					)
+				
+				col1, col2 = st.columns(2)
+				with col1:
+					line_spacing = st.slider(
+						"讲解文本行距", 
+						0.6, 2.0, 1.2, 0.1,
+						help="行与行之间的距离"
+					)
+				with col2:
+					column_padding = st.slider(
+						"栏内边距", 
+						2, 16, 10, 1,
+						help="控制每栏左右内边距"
+					)
+				
+				# 字体选择
+				try:
+					from app.services.font_helper import get_windows_cjk_fonts
+					available_fonts = get_windows_cjk_fonts()
+					font_options = [font[0] for font in available_fonts]
+					try:
+						default_index = font_options.index("SimHei")
+					except ValueError:
+						default_index = 0
+					cjk_font_name = st.selectbox(
+						"CJK 字体", 
+						font_options, 
+						index=default_index, 
+						help="选择用于显示中文的字体"
+					)
+				except Exception as e:
+					st.warning(f"无法检测系统字体，使用默认字体: {e}")
+					cjk_font_name = "SimHei"
+				
+				render_mode = st.selectbox(
+					"右栏渲染方式", 
+					["text", "markdown", "pandoc"], 
+					index=1,
+					help="text: 普通文本\nmarkdown: Markdown渲染\npandoc: 高质量PDF (需Pandoc)"
+				)
+			else:
+				# 非PDF模式的默认值
+				right_ratio = 0.48
+				font_size = 20
+				line_spacing = 1.2
+				column_padding = 10
+				cjk_font_name = "SimHei"
+				render_mode = "markdown"
+			
+			# 讲解风格提示词 - 所有模式通用
+			st.markdown("**讲解风格配置**")
+			user_prompt = st.text_area(
+				"讲解风格/要求", 
+				value="请用中文讲解本页pdf，关键词给出英文，讲解详尽，语言简洁易懂。讲解让人一看就懂，便于快速学习。请避免不必要的换行，使页面保持紧凑。",
+				help="自定义讲解提示词"
+			)
 	
 	return {
 		"api_key": api_key,
@@ -817,7 +967,7 @@ def main():
 		# 生成按钮
 		if valid_pairs and not st.session_state.get("batch_json_processing", False):
 			output_mode = params.get("output_mode", "PDF讲解版")
-			button_text = f"根据JSON重新生成{'Markdown文档' if output_mode == 'Markdown截图讲解' else 'PDF'} ({len(valid_pairs)} 个文件)"
+			button_text = f"根据JSON重新生成{'Markdown文档' if output_mode == 'Markdown截图讲解' else 'HTML文档' if output_mode == 'HTML截图版' else 'PDF'} ({len(valid_pairs)} 个文件)"
 			if st.button(button_text, type="primary", use_container_width=True):
 				_build_and_run_with_pairs(valid_pairs)
 

@@ -81,7 +81,31 @@ class HTMLScreenshotGenerator:
         column_rule = f"1px solid #ddd" if show_column_rule else "none"
         
         css = f"""
-/* HTML Screenshot View Styles */
+/* HTML Screenshot View Styles - Minimalist Breathing Layout */
+:root {{
+    --bg-color: #ffffff;
+    --text-color: #1a1a1a;
+    --accent-color: #0ea5e9;
+    --accent-hover: #38bdf8;
+    --border-color: #e5e5e5;
+    --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    --hover-bg: rgba(14, 165, 233, 0.05);
+    --code-bg: #f8f9fa;
+    --font-size: {font_size}pt;
+    --line-height: 1.8;
+}}
+
+body.dark-mode {{
+    --bg-color: #0a0a0a;
+    --text-color: #e5e5e5;
+    --accent-color: #38bdf8;
+    --accent-hover: #0ea5e9;
+    --border-color: #262626;
+    --card-shadow: 0 2px 8px rgba(255, 255, 255, 0.06);
+    --hover-bg: rgba(56, 189, 248, 0.1);
+    --code-bg: #1a1a1a;
+}}
+
 * {{
     margin: 0;
     padding: 0;
@@ -90,11 +114,12 @@ class HTMLScreenshotGenerator:
 
 body {{
     font-family: '{font_name}', 'Microsoft YaHei', 'SimHei', sans-serif;
-    font-size: {font_size}pt;
-    line-height: {line_spacing};
-    color: #333;
+    font-size: var(--font-size);
+    line-height: var(--line-height);
+    color: var(--text-color);
     background-color: #f5f5f5;
     overflow: hidden;
+    transition: background-color 0.3s ease, color 0.3s ease;
 }}
 
 .main-container {{
@@ -170,28 +195,29 @@ body {{
 .explanations-panel {{
     flex: 1;
     max-width: 50%;
-    background: white;
+    background: var(--bg-color);
     overflow-y: auto;
     overflow-x: hidden;
     display: flex;
     flex-direction: column;
+    transition: background-color 0.3s ease;
 }}
 
 .explanations-panel::-webkit-scrollbar {{
-    width: 12px;
+    width: 8px;
 }}
 
 .explanations-panel::-webkit-scrollbar-track {{
-    background: #ecf0f1;
+    background: transparent;
 }}
 
 .explanations-panel::-webkit-scrollbar-thumb {{
-    background: #bdc3c7;
-    border-radius: 6px;
+    background: var(--border-color);
+    border-radius: 4px;
 }}
 
 .explanations-panel::-webkit-scrollbar-thumb:hover {{
-    background: #95a5a6;
+    background: var(--accent-color);
 }}
 
 .explanation-header {{
@@ -203,6 +229,10 @@ body {{
     position: sticky;
     top: 0;
     z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
 }}
 
 .explanation-header h1 {{
@@ -217,6 +247,28 @@ body {{
     opacity: 0.9;
 }}
 
+.theme-toggle {{
+    position: absolute;
+    right: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: white;
+    font-size: 20pt;
+    width: 45px;
+    height: 45px;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    backdrop-filter: blur(10px);
+}}
+
+.theme-toggle:hover {{
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(-50%) scale(1.1);
+}}
+
 .explanations-container {{
     flex: 1;
     position: relative;
@@ -224,8 +276,7 @@ body {{
 
 .explanation-item {{
     display: none;
-    padding: 30px;
-    animation: fadeIn 0.3s ease-in-out;
+    animation: fadeInUp 0.5s ease-out;
 }}
 
 .explanation-item.active {{
@@ -233,19 +284,25 @@ body {{
 }}
 
 .explanation-page-title {{
-    font-size: 20pt;
+    font-size: 28pt;
     font-weight: bold;
-    color: #2c3e50;
-    margin-bottom: 20px;
-    padding-bottom: 10px;
-    border-bottom: 3px solid #3498db;
+    color: var(--text-color);
+    margin-bottom: 60px;
+    margin-top: 40px;
+    padding-bottom: 15px;
+    border-bottom: 2px solid var(--accent-color);
+    max-width: 720px;
+    margin-left: auto;
+    margin-right: auto;
+    transition: color 0.3s ease, border-color 0.3s ease;
 }}
 
-/* Column layout for explanation content */
+/* Single column centered layout for explanation content */
 .explanation-content {{
-    column-count: {column_count};
-    column-gap: {column_gap}px;
-    column-rule: {column_rule};
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 0 40px 60px 40px;
+    line-height: var(--line-height);
     text-align: justify;
     text-justify: inter-word;
 }}
@@ -256,109 +313,273 @@ body {{
 .explanation-content h4,
 .explanation-content h5,
 .explanation-content h6 {{
-    color: #2c3e50;
-    margin-top: 15px;
-    margin-bottom: 12px;
-    break-after: avoid;
-    page-break-after: avoid;
+    color: var(--text-color);
+    margin-top: 50px;
+    margin-bottom: 25px;
+    font-weight: 600;
+    line-height: 1.3;
+    transition: color 0.3s ease;
 }}
 
 .explanation-content h1 {{
-    font-size: 18pt;
-    border-bottom: 2px solid #3498db;
-    padding-bottom: 8px;
+    font-size: 28pt;
+    border-bottom: 2px solid var(--accent-color);
+    padding-bottom: 12px;
+    margin-top: 60px;
 }}
 
 .explanation-content h2 {{
-    font-size: 16pt;
-    color: #3498db;
+    font-size: 22pt;
+    color: var(--accent-color);
 }}
 
 .explanation-content h3 {{
-    font-size: 14pt;
+    font-size: 18pt;
+    font-weight: 500;
+}}
+
+.explanation-content h4 {{
+    font-size: 16pt;
+    font-weight: 500;
 }}
 
 .explanation-content p {{
-    margin-bottom: 12px;
-    break-inside: avoid;
-    page-break-inside: avoid;
+    margin-bottom: 40px;
 }}
 
 .explanation-content ul,
 .explanation-content ol {{
-    margin-left: 20px;
-    margin-bottom: 12px;
-    break-inside: avoid;
-    page-break-inside: avoid;
+    margin-left: 24px;
+    margin-bottom: 35px;
+    padding-left: 10px;
 }}
 
 .explanation-content li {{
-    margin-bottom: 6px;
+    margin-bottom: 12px;
+    line-height: 1.6;
 }}
 
 .explanation-content code {{
-    background: #f8f9fa;
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 0.9em;
-    color: #e74c3c;
+    background: var(--code-bg);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 14pt;
+    color: var(--accent-color);
+    transition: background-color 0.3s ease;
 }}
 
 .explanation-content pre {{
-    background: #f8f9fa;
-    border: 1px solid #e9ecef;
-    border-radius: 5px;
-    padding: 15px;
+    background: var(--code-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 25px;
     overflow-x: auto;
-    margin: 15px 0;
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 11pt;
-    break-inside: avoid;
-    page-break-inside: avoid;
+    margin: 30px 0;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13pt;
+    line-height: 1.6;
+    box-shadow: var(--card-shadow);
+    transition: all 0.3s ease;
+}}
+
+.explanation-content pre:hover {{
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
 }}
 
 .explanation-content blockquote {{
-    border-left: 4px solid #3498db;
-    padding-left: 15px;
-    margin: 15px 0;
+    border-left: 4px solid var(--accent-color);
+    padding-left: 25px;
+    margin: 35px 0;
     font-style: italic;
-    color: #7f8c8d;
-    background: #ecf0f1;
-    padding: 15px;
-    border-radius: 0 5px 5px 0;
-    break-inside: avoid;
-    page-break-inside: avoid;
+    color: var(--text-color);
+    opacity: 0.9;
+    background: var(--hover-bg);
+    padding: 20px 25px;
+    border-radius: 0 8px 8px 0;
+    transition: all 0.3s ease;
+}}
+
+.explanation-content blockquote:hover {{
+    opacity: 1;
+    padding-left: 30px;
 }}
 
 .explanation-content table {{
     width: 100%;
     border-collapse: collapse;
-    margin: 15px 0;
-    break-inside: avoid;
-    page-break-inside: avoid;
+    margin: 35px 0;
+    box-shadow: var(--card-shadow);
+    border-radius: 8px;
+    overflow: hidden;
 }}
 
 .explanation-content table th,
 .explanation-content table td {{
-    border: 1px solid #ddd;
-    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    padding: 12px 16px;
     text-align: left;
+    transition: background-color 0.3s ease;
 }}
 
 .explanation-content table th {{
-    background: #3498db;
+    background: var(--accent-color);
     color: white;
     font-weight: bold;
+    font-size: 15pt;
 }}
 
 .explanation-content table tr:nth-child(even) {{
-    background: #f8f9fa;
+    background: var(--hover-bg);
 }}
 
+.explanation-content table tr:hover {{
+    background: var(--hover-bg);
+}}
+
+/* Animations */
 @keyframes fadeIn {{
     from {{ opacity: 0; transform: translateY(10px); }}
     to {{ opacity: 1; transform: translateY(0); }}
+}}
+
+@keyframes fadeInUp {{
+    from {{ 
+        opacity: 0; 
+        transform: translateY(30px); 
+    }}
+    to {{ 
+        opacity: 1; 
+        transform: translateY(0); 
+    }}
+}}
+
+/* Reading Progress Bar */
+.reading-progress {{
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent-color), var(--accent-hover));
+    width: 0%;
+    transition: width 0.1s cubic-bezier(0.4, 0.0, 0.2, 1);
+    z-index: 10001;
+    box-shadow: 0 2px 4px rgba(14, 165, 233, 0.3);
+}}
+
+/* Font Controls Panel */
+.font-controls {{
+    position: fixed;
+    bottom: 100px;
+    right: 30px;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    z-index: 1001;
+    min-width: 220px;
+    opacity: 0;
+    transform: translateX(300px);
+    transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+}}
+
+body.dark-mode .font-controls {{
+    background: rgba(26, 26, 26, 0.95);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}}
+
+.font-controls.visible {{
+    opacity: 1;
+    transform: translateX(0);
+}}
+
+.font-controls-toggle {{
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    background: var(--accent-color);
+    color: white;
+    border: none;
+    font-size: 20pt;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(14, 165, 233, 0.4);
+    z-index: 1001;
+    transition: all 0.3s ease;
+}}
+
+.font-controls-toggle:hover {{
+    transform: scale(1.1);
+    box-shadow: 0 6px 16px rgba(14, 165, 233, 0.5);
+}}
+
+.font-control-group {{
+    margin-bottom: 15px;
+}}
+
+.font-control-group:last-child {{
+    margin-bottom: 0;
+}}
+
+.font-control-label {{
+    display: block;
+    margin-bottom: 8px;
+    font-size: 12pt;
+    font-weight: 600;
+    color: var(--text-color);
+}}
+
+.font-control-slider {{
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--border-color);
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+}}
+
+.font-control-slider::-webkit-slider-thumb {{
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent-color);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}}
+
+.font-control-slider::-webkit-slider-thumb:hover {{
+    transform: scale(1.2);
+    box-shadow: 0 2px 8px rgba(14, 165, 233, 0.4);
+}}
+
+.font-control-slider::-moz-range-thumb {{
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent-color);
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s ease;
+}}
+
+.font-control-slider::-moz-range-thumb:hover {{
+    transform: scale(1.2);
+    box-shadow: 0 2px 8px rgba(14, 165, 233, 0.4);
+}}
+
+.font-control-value {{
+    display: inline-block;
+    margin-left: 8px;
+    font-size: 11pt;
+    color: var(--accent-color);
+    font-weight: bold;
 }}
 
 /* Navigation controls */
@@ -452,36 +673,103 @@ body {{
     }}
     
     .explanation-content {{
-        column-count: 1;
+        padding: 0 30px 50px 30px;
+    }}
+    
+    .font-controls {{
+        right: 20px;
+        bottom: 90px;
+        min-width: 200px;
+    }}
+    
+    .font-controls-toggle {{
+        right: 20px;
+        bottom: 20px;
+        width: 45px;
+        height: 45px;
     }}
 }}
 
 @media (max-width: 768px) {{
-    body {{
-        font-size: 12pt;
+    :root {{
+        --font-size: 14pt;
+        --line-height: 1.7;
+    }}
+    
+    .explanation-header {{
+        padding: 15px 20px;
     }}
     
     .explanation-header h1 {{
         font-size: 18pt;
     }}
     
+    .theme-toggle {{
+        width: 40px;
+        height: 40px;
+        font-size: 18pt;
+    }}
+    
+    .explanation-page-title {{
+        font-size: 22pt;
+        margin-bottom: 40px;
+        margin-top: 30px;
+    }}
+    
     .explanation-content {{
-        column-count: 1;
-        padding: 20px;
+        max-width: 100%;
+        padding: 0 20px 40px 20px;
+    }}
+    
+    .explanation-content h1 {{
+        font-size: 22pt;
+        margin-top: 40px;
+    }}
+    
+    .explanation-content h2 {{
+        font-size: 18pt;
+    }}
+    
+    .explanation-content h3 {{
+        font-size: 16pt;
+    }}
+    
+    .explanation-content p {{
+        margin-bottom: 30px;
     }}
     
     .nav-controls {{
         bottom: 15px;
         right: 15px;
         padding: 10px 15px;
+        gap: 10px;
+    }}
+    
+    .font-controls {{
+        right: 10px;
+        bottom: 80px;
+        min-width: 180px;
+        padding: 15px;
+    }}
+    
+    .font-controls-toggle {{
+        right: 10px;
+        bottom: 10px;
+        width: 40px;
+        height: 40px;
+        font-size: 16pt;
     }}
 }}
 
 /* Print styles */
 @media print {{
     .nav-controls,
-    .loading {{
-        display: none;
+    .loading,
+    .reading-progress,
+    .theme-toggle,
+    .font-controls,
+    .font-controls-toggle {{
+        display: none !important;
     }}
     
     .main-container {{
@@ -492,6 +780,11 @@ body {{
     .explanations-panel {{
         max-width: 100%;
         overflow: visible;
+    }}
+    
+    .explanation-content {{
+        max-width: 100%;
+        padding: 20px;
     }}
 }}
 """
@@ -509,12 +802,14 @@ body {{
             JavaScript string
         """
         js = f"""
-// HTML Screenshot View Synchronization
+// HTML Screenshot View Synchronization - Enhanced with Theme & Font Controls
 class ScreenshotExplanationSync {{
     constructor() {{
         this.currentPage = 1;
         this.totalPages = {total_pages};
         this.observer = null;
+        this.fontControlsVisible = false;
+        this.pageScrollPositions = {{}}; // Store scroll position for each page
         this.init();
     }}
     
@@ -525,14 +820,137 @@ class ScreenshotExplanationSync {{
             setTimeout(() => loading.remove(), 500);
         }}
         
+        // Load saved theme and font settings
+        this.loadSettings();
+        
         // Setup intersection observer
         this.setupObserver();
         
         // Setup navigation controls
         this.setupControls();
         
+        // Setup reading progress bar
+        this.setupReadingProgress();
+        
+        // Setup theme toggle
+        this.setupThemeToggle();
+        
+        // Setup font controls
+        this.setupFontControls();
+        
         // Show first page
         this.showExplanation(1);
+    }}
+    
+    loadSettings() {{
+        // Load theme preference
+        const savedTheme = localStorage.getItem('html-screenshot-theme');
+        if (savedTheme === 'dark') {{
+            document.body.classList.add('dark-mode');
+        }}
+        
+        // Load font settings
+        const savedFontSize = localStorage.getItem('html-screenshot-font-size');
+        const savedLineHeight = localStorage.getItem('html-screenshot-line-height');
+        
+        if (savedFontSize) {{
+            document.documentElement.style.setProperty('--font-size', savedFontSize + 'pt');
+        }}
+        
+        if (savedLineHeight) {{
+            document.documentElement.style.setProperty('--line-height', savedLineHeight);
+        }}
+    }}
+    
+    setupReadingProgress() {{
+        const explanationsPanel = document.querySelector('.explanations-panel');
+        if (!explanationsPanel) return;
+        
+        let ticking = false;
+        explanationsPanel.addEventListener('scroll', () => {{
+            if (!ticking) {{
+                window.requestAnimationFrame(() => {{
+                    const scrollTop = explanationsPanel.scrollTop;
+                    const scrollHeight = explanationsPanel.scrollHeight - explanationsPanel.clientHeight;
+                    const progress = (scrollTop / scrollHeight) * 100;
+                    
+                    const progressBar = document.querySelector('.reading-progress');
+                    if (progressBar) {{
+                        progressBar.style.width = Math.min(progress, 100) + '%';
+                    }}
+                    
+                    ticking = false;
+                }});
+                ticking = true;
+            }}
+        }});
+    }}
+    
+    setupThemeToggle() {{
+        const themeToggle = document.querySelector('.theme-toggle');
+        if (!themeToggle) return;
+        
+        // Update button icon based on current theme
+        this.updateThemeIcon();
+        
+        themeToggle.addEventListener('click', () => {{
+            document.body.classList.toggle('dark-mode');
+            const isDark = document.body.classList.contains('dark-mode');
+            localStorage.setItem('html-screenshot-theme', isDark ? 'dark' : 'light');
+            this.updateThemeIcon();
+        }});
+    }}
+    
+    updateThemeIcon() {{
+        const themeToggle = document.querySelector('.theme-toggle');
+        if (!themeToggle) return;
+        
+        const isDark = document.body.classList.contains('dark-mode');
+        themeToggle.textContent = isDark ? '☀️' : '🌙';
+        themeToggle.title = isDark ? 'Switch to light mode' : 'Switch to dark mode';
+    }}
+    
+    setupFontControls() {{
+        const toggle = document.querySelector('.font-controls-toggle');
+        const panel = document.querySelector('.font-controls');
+        const fontSizeSlider = document.getElementById('font-size-slider');
+        const lineHeightSlider = document.getElementById('line-height-slider');
+        
+        if (!toggle || !panel) return;
+        
+        // Toggle panel visibility
+        toggle.addEventListener('click', () => {{
+            this.fontControlsVisible = !this.fontControlsVisible;
+            panel.classList.toggle('visible', this.fontControlsVisible);
+        }});
+        
+        // Font size control
+        if (fontSizeSlider) {{
+            const savedFontSize = localStorage.getItem('html-screenshot-font-size') || '16';
+            fontSizeSlider.value = savedFontSize;
+            document.getElementById('font-size-value').textContent = savedFontSize + 'pt';
+            
+            fontSizeSlider.addEventListener('input', (e) => {{
+                const value = e.target.value;
+                document.documentElement.style.setProperty('--font-size', value + 'pt');
+                document.getElementById('font-size-value').textContent = value + 'pt';
+                localStorage.setItem('html-screenshot-font-size', value);
+            }});
+        }}
+        
+        // Line height control
+        if (lineHeightSlider) {{
+            const savedLineHeight = localStorage.getItem('html-screenshot-line-height') || '1.8';
+            lineHeightSlider.value = savedLineHeight;
+            document.getElementById('line-height-value').textContent = savedLineHeight;
+            
+            lineHeightSlider.addEventListener('input', (e) => {{
+                const value = e.target.value;
+                document.documentElement.style.setProperty('--line-height', value);
+                document.getElementById('line-height-value').textContent = value;
+                localStorage.setItem('html-screenshot-line-height', value);
+            }});
+        }}
     }}
     
     setupObserver() {{
@@ -575,8 +993,13 @@ class ScreenshotExplanationSync {{
             nextBtn.addEventListener('click', () => this.goToNextPage());
         }}
         
-        // Keyboard navigation
+        // Keyboard navigation with smooth scrolling
         document.addEventListener('keydown', (e) => {{
+            // Don't trigger if user is typing in an input
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {{
+                return;
+            }}
+            
             switch(e.key) {{
                 case 'ArrowUp':
                 case 'ArrowLeft':
@@ -599,11 +1022,23 @@ class ScreenshotExplanationSync {{
                     break;
             }}
         }});
+        
+        // Apply smooth scrolling to explanations panel
+        const explanationsPanel = document.querySelector('.explanations-panel');
+        if (explanationsPanel) {{
+            explanationsPanel.style.scrollBehavior = 'smooth';
+        }}
     }}
     
     showExplanation(pageNum) {{
         if (pageNum < 1 || pageNum > this.totalPages) {{
             return;
+        }}
+        
+        // Save current page scroll position before switching
+        const explanationsPanel = document.querySelector('.explanations-panel');
+        if (explanationsPanel && this.currentPage) {{
+            this.pageScrollPositions[this.currentPage] = explanationsPanel.scrollTop;
         }}
         
         this.currentPage = pageNum;
@@ -617,6 +1052,17 @@ class ScreenshotExplanationSync {{
         const targetExplanation = document.getElementById(`explanation-${{pageNum}}`);
         if (targetExplanation) {{
             targetExplanation.classList.add('active');
+        }}
+        
+        // Restore scroll position for this page, or scroll to top if first visit
+        if (explanationsPanel) {{
+            if (this.pageScrollPositions[pageNum] !== undefined) {{
+                // Restore previous scroll position
+                explanationsPanel.scrollTop = this.pageScrollPositions[pageNum];
+            }} else {{
+                // First visit to this page, scroll to top
+                explanationsPanel.scrollTop = 0;
+            }}
         }}
         
         // Update page indicator
@@ -776,6 +1222,9 @@ window.goToPage = function(pageNum) {{
     <style>{css_styles}</style>
 </head>
 <body>
+    <!-- Reading Progress Bar -->
+    <div class="reading-progress"></div>
+    
     <!-- Loading indicator -->
     <div class="loading">
         <div style="font-size: 16pt; font-weight: bold; color: #2c3e50;">正在加载...</div>
@@ -790,8 +1239,11 @@ window.goToPage = function(pageNum) {{
         <!-- Right panel: Explanations -->
         <div class="explanations-panel">
             <div class="explanation-header">
-                <h1>📚 {title}</h1>
-                <div class="current-page-indicator">第 1 页 / 共 {total_pages} 页</div>
+                <div style="text-align: center; flex: 1;">
+                    <h1>📚 {title}</h1>
+                    <div class="current-page-indicator">第 1 页 / 共 {total_pages} 页</div>
+                </div>
+                <button class="theme-toggle" title="切换主题">🌙</button>
             </div>
             <div class="explanations-container">
                 {explanations_html}
@@ -804,6 +1256,43 @@ window.goToPage = function(pageNum) {{
         <button class="nav-btn" id="prev-btn" title="上一页 (↑)">‹ 上一页</button>
         <span class="page-info">1 / {total_pages}</span>
         <button class="nav-btn" id="next-btn" title="下一页 (↓)">下一页 ›</button>
+    </div>
+    
+    <!-- Font Controls Toggle Button -->
+    <button class="font-controls-toggle" title="字体设置">Aa</button>
+    
+    <!-- Font Controls Panel -->
+    <div class="font-controls">
+        <div class="font-control-group">
+            <label class="font-control-label">
+                字体大小
+                <span class="font-control-value" id="font-size-value">16pt</span>
+            </label>
+            <input 
+                type="range" 
+                class="font-control-slider" 
+                id="font-size-slider" 
+                min="12" 
+                max="24" 
+                step="1" 
+                value="16"
+            />
+        </div>
+        <div class="font-control-group">
+            <label class="font-control-label">
+                行距
+                <span class="font-control-value" id="line-height-value">1.8</span>
+            </label>
+            <input 
+                type="range" 
+                class="font-control-slider" 
+                id="line-height-slider" 
+                min="1.3" 
+                max="2.5" 
+                step="0.1" 
+                value="1.8"
+            />
+        </div>
     </div>
     
     <script>{javascript_code}</script>
