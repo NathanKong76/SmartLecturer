@@ -58,9 +58,9 @@ def sidebar_form():
 		st.subheader("📤 输出模式")
 		output_mode = st.radio(
 			"选择输出格式",
-			["PDF讲解版", "Markdown截图讲解", "HTML截图版"],
-			index=2,
-			help="PDF讲解版：在PDF右侧添加讲解文字\nMarkdown截图讲解：生成包含页面截图和讲解的markdown文档\nHTML截图版：生成单个HTML文件，左侧显示PDF截图，右侧显示多栏markdown渲染讲解"
+			["PDF讲解版", "Markdown截图讲解", "HTML截图版", "HTML-pdf2htmlEX版"],
+			index=3,
+			help="PDF讲解版：在PDF右侧添加讲解文字\nMarkdown截图讲解：生成包含页面截图和讲解的markdown文档\nHTML截图版：生成单个HTML文件，左侧显示PDF截图，右侧显示多栏markdown渲染讲解\nHTML-pdf2htmlEX版：使用pdf2htmlEX转换PDF为高质量HTML，布局与HTML截图版一致"
 		)
 		
 
@@ -81,12 +81,19 @@ def sidebar_form():
 			html_column_gap = 20
 			html_show_column_rule = True
 			st.divider()
-		elif output_mode == "HTML截图版":
-			st.subheader("🌐 HTML 截图版参数")
+		elif output_mode == "HTML截图版" or output_mode == "HTML-pdf2htmlEX版":
+			if output_mode == "HTML截图版":
+				st.subheader("🌐 HTML 截图版参数")
+			else:
+				st.subheader("🌐 HTML-pdf2htmlEX版参数")
 			
 			col1, col2 = st.columns(2)
 			with col1:
-				screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
+				if output_mode == "HTML截图版":
+					screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
+				else:  # HTML-pdf2htmlEX版
+					screenshot_dpi = 150  # pdf2htmlEX不需要截图DPI
+					st.info("pdf2htmlEX将直接转换PDF为HTML，无需截图")
 			with col2:
 				font_size = st.number_input("讲解字体大小", min_value=10, max_value=24, value=14, step=1, help="讲解文字的字体大小")
 			
@@ -349,6 +356,8 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→生成Markdown文档（包含截图）")
 	elif output_mode == "HTML截图版":
 		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→生成HTML文档（包含截图和多栏布局）")
+	elif output_mode == "HTML-pdf2htmlEX版":
+		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→使用pdf2htmlEX转换→生成HTML文档（高质量PDF转HTML）")
 	else:
 		st.info(f"开始批量处理 {total_files} 个文件：逐页渲染→生成讲解→合成新PDF（保持向量）")
 	
@@ -404,6 +413,9 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 	elif output_mode == "HTML截图版":
 		from app.ui_helpers import build_zip_cache_html_screenshot
 		st.session_state["batch_zip_bytes"] = build_zip_cache_html_screenshot(batch_results)
+	elif output_mode == "HTML-pdf2htmlEX版":
+		from app.ui_helpers import build_zip_cache_html_pdf2htmlex
+		st.session_state["batch_zip_bytes"] = build_zip_cache_html_pdf2htmlex(batch_results)
 	else:
 		st.session_state["batch_zip_bytes"] = build_zip_cache_pdf(batch_results)
 	
@@ -583,6 +595,8 @@ def main():
 				
 				if output_mode == "HTML截图版":
 					label_text = "📦 下载所有HTML和讲解JSON (ZIP)"
+				elif output_mode == "HTML-pdf2htmlEX版":
+					label_text = "📦 下载所有HTML-pdf2htmlEX和讲解JSON (ZIP)"
 				elif output_mode == "Markdown截图讲解":
 					label_text = "📦 下载所有Markdown和讲解JSON (ZIP)"
 				else:
@@ -636,8 +650,8 @@ def main():
 										)
 									except Exception:
 										pass
-						elif params["output_mode"] == "HTML截图版":
-							# HTML截图版模式：下载HTML文件和JSON
+						elif params["output_mode"] == "HTML截图版" or params["output_mode"] == "HTML-pdf2htmlEX版":
+							# HTML截图版/pdf2htmlEX模式：下载HTML文件和JSON
 							html_filename = f"{base_name}讲解文档.html"
 							json_filename = f"{base_name}.json"
 
@@ -707,6 +721,8 @@ def main():
 			st.info("开始批量根据JSON重新生成Markdown文档...")
 		elif output_mode == "HTML截图版":
 			st.info("开始批量根据JSON重新生成HTML文档...")
+		elif output_mode == "HTML-pdf2htmlEX版":
+			st.info("开始批量根据JSON重新生成HTML-pdf2htmlEX文档...")
 		else:
 			st.info("开始批量根据JSON重新生成PDF...")
 
@@ -776,8 +792,8 @@ def main():
 						"status": "failed",
 						"error": str(e)
 					}
-		elif output_mode == "HTML截图版":
-			# HTML截图版模式：手动处理每个文件
+		elif output_mode == "HTML截图版" or output_mode == "HTML-pdf2htmlEX版":
+			# HTML截图版/pdf2htmlEX模式：手动处理每个文件
 			for pdf_name, pdf_bytes in pdf_data:
 				try:
 					# 找到对应的JSON数据
@@ -802,18 +818,32 @@ def main():
 					base_name = os.path.splitext(pdf_name)[0]
 					# Use user-configured title if provided, otherwise use filename
 					title = params.get("markdown_title", "").strip() or base_name
-					html_content = pdf_processor.generate_html_screenshot_document(
-						src_bytes=pdf_bytes,
-						explanations=explanations,
-						screenshot_dpi=params.get("screenshot_dpi", 150),
-						title=title,
-						font_name=params.get("cjk_font_name", "SimHei"),
-						font_size=params.get("font_size", 14),
-						line_spacing=params.get("line_spacing", 1.2),
-						column_count=params.get("html_column_count", 2),
-						column_gap=params.get("html_column_gap", 20),
-						show_column_rule=params.get("html_show_column_rule", True)
-					)
+					
+					if output_mode == "HTML-pdf2htmlEX版":
+						html_content = pdf_processor.generate_html_pdf2htmlex_document(
+							src_bytes=pdf_bytes,
+							explanations=explanations,
+							title=title,
+							font_name=params.get("cjk_font_name", "SimHei"),
+							font_size=params.get("font_size", 14),
+							line_spacing=params.get("line_spacing", 1.2),
+							column_count=params.get("html_column_count", 2),
+							column_gap=params.get("html_column_gap", 20),
+							show_column_rule=params.get("html_show_column_rule", True)
+						)
+					else:  # HTML截图版
+						html_content = pdf_processor.generate_html_screenshot_document(
+							src_bytes=pdf_bytes,
+							explanations=explanations,
+							screenshot_dpi=params.get("screenshot_dpi", 150),
+							title=title,
+							font_name=params.get("cjk_font_name", "SimHei"),
+							font_size=params.get("font_size", 14),
+							line_spacing=params.get("line_spacing", 1.2),
+							column_count=params.get("html_column_count", 2),
+							column_gap=params.get("html_column_gap", 20),
+							show_column_rule=params.get("html_show_column_rule", True)
+						)
 
 					batch_results[pdf_name] = {
 						"status": "completed",
@@ -873,7 +903,7 @@ def main():
 				st.session_state["batch_json_zip_bytes"] = zip_buffer.getvalue()
 			else:
 				st.session_state["batch_json_zip_bytes"] = None
-		elif output_mode == "HTML截图版":
+		elif output_mode == "HTML截图版" or output_mode == "HTML-pdf2htmlEX版":
 			completed_count = sum(1 for r in batch_results.values() if r["status"] == "completed" and r.get("html_content"))
 			if completed_count > 0:
 				zip_buffer = io.BytesIO()
@@ -984,7 +1014,15 @@ def main():
 		# 生成按钮
 		if valid_pairs and not st.session_state.get("batch_json_processing", False):
 			output_mode = params.get("output_mode", "PDF讲解版")
-			button_text = f"根据JSON重新生成{'Markdown文档' if output_mode == 'Markdown截图讲解' else 'HTML文档' if output_mode == 'HTML截图版' else 'PDF'} ({len(valid_pairs)} 个文件)"
+			if output_mode == 'Markdown截图讲解':
+				doc_type = 'Markdown文档'
+			elif output_mode == 'HTML截图版':
+				doc_type = 'HTML文档'
+			elif output_mode == 'HTML-pdf2htmlEX版':
+				doc_type = 'HTML-pdf2htmlEX文档'
+			else:
+				doc_type = 'PDF'
+			button_text = f"根据JSON重新生成{doc_type} ({len(valid_pairs)} 个文件)"
 			if st.button(button_text, type="primary", use_container_width=True):
 				_build_and_run_with_pairs(valid_pairs)
 
@@ -1011,6 +1049,9 @@ def main():
 				elif output_mode == "HTML截图版":
 					zip_filename = f"批量JSON重新生成HTML_{time.strftime('%Y%m%d_%H%M%S')}.zip"
 					button_label = "📦 下载所有成功处理的HTML文档 (ZIP)"
+				elif output_mode == "HTML-pdf2htmlEX版":
+					zip_filename = f"批量JSON重新生成HTML-pdf2htmlEX_{time.strftime('%Y%m%d_%H%M%S')}.zip"
+					button_label = "📦 下载所有成功处理的HTML-pdf2htmlEX文档 (ZIP)"
 				else:
 					zip_filename = f"批量JSON重新生成PDF_{time.strftime('%Y%m%d_%H%M%S')}.zip"
 					button_label = "📦 下载所有成功处理的PDF (ZIP)"

@@ -135,7 +135,7 @@ body {{
     background: #2c3e50;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 20px;
+    padding: 5px;
     position: relative;
 }}
 

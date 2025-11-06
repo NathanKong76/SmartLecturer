@@ -1,0 +1,22 @@
+Windows Registry Editor Version 5.00
+
+; 在文件夹空白处右键
+[HKEY_CLASSES_ROOT\Directory\Background\shell\OpenPwshHere]
+@="在此处打开 PowerShell 7"
+"Icon"="%ProgramFiles%\\PowerShell\\7\\pwsh.exe"
+[HKEY_CLASSES_ROOT\Directory\Background\shell\OpenPwshHere\command]
+@="\"%ProgramFiles%\\PowerShell\\7\\pwsh.exe\" -NoExit -Command \"Set-Location -LiteralPath '%V'\""
+
+; 在文件夹对象上右键
+[HKEY_CLASSES_ROOT\Directory\shell\OpenPwshHere]
+@="在此处打开 PowerShell 7"
+"Icon"="%ProgramFiles%\\PowerShell\\7\\pwsh.exe"
+[HKEY_CLASSES_ROOT\Directory\shell\OpenPwshHere\command]
+@="\"%ProgramFiles%\\PowerShell\\7\\pwsh.exe\" -NoExit -Command \"Set-Location -LiteralPath '%1'\""
+
+; 在驱动器上右键
+[HKEY_CLASSES_ROOT\Drive\shell\OpenPwshHere]
+@="在此处打开 PowerShell 7"
+"Icon"="%ProgramFiles%\\PowerShell\\7\\pwsh.exe"
+[HKEY_CLASSES_ROOT\Drive\shell\OpenPwshHere\command]
+@="\"%ProgramFiles%\\PowerShell\\7\\pwsh.exe\" -NoExit -Command \"Set-Location -LiteralPath '%1'\""

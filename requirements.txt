@@ -7,6 +7,7 @@ pillow==10.4.0
 python-dotenv==1.0.1
 tqdm==4.66.5
 markdown==3.6
+beautifulsoup4==4.12.3
 # 可选：更好的 Markdown 支持（表格/代码高亮等），如不需要可移除
 pymdown-extensions==10.8.1
 # 可选：Windows 字体检测（可选安装，如果未安装将使用默认字体列表）

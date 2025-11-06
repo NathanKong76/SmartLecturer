@@ -307,6 +307,99 @@ def process_single_file_html_screenshot(
             return markdown_result
 
 
+def process_single_file_html_pdf2htmlex(
+    uploaded_file: Optional[Any],
+    filename: str,
+    src_bytes: bytes,
+    params: Dict[str, Any],
+    cached_result: Optional[Dict[str, Any]],
+    file_hash: str
+) -> Dict[str, Any]:
+    """
+    Process a single file in HTML pdf2htmlEX mode.
+    
+    Args:
+        uploaded_file: Uploaded file object (optional, not used if src_bytes provided)
+        filename: File name
+        src_bytes: PDF file bytes
+        params: Processing parameters
+        cached_result: Cached result if available
+        file_hash: File hash for cache
+        
+    Returns:
+        Processing result dictionary
+    """
+    from app.cache_processor import cached_process_markdown
+    
+    # Try to use cached result
+    if cached_result and cached_result.get("status") == "completed":
+        st.info(f"📋 {filename} 使用缓存结果")
+        try:
+            # Generate HTML from cached explanations
+            base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+            # Use user-configured title if provided, otherwise use filename
+            title = params.get("markdown_title", "").strip() or base_name
+            html_content = pdf_processor.generate_html_pdf2htmlex_document(
+                src_bytes=src_bytes,
+                explanations=cached_result["explanations"],
+                title=title,
+                font_name=params.get("cjk_font_name", "SimHei"),
+                font_size=params.get("font_size", 14),
+                line_spacing=params.get("line_spacing", 1.2),
+                column_count=params.get("html_column_count", 2),
+                column_gap=params.get("html_column_gap", 20),
+                show_column_rule=params.get("html_show_column_rule", True)
+            )
+            return {
+                "status": "completed",
+                "html_content": html_content,
+                "explanations": cached_result["explanations"],
+                "failed_pages": cached_result["failed_pages"]
+            }
+        except Exception as e:
+            st.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
+            # Fall through to reprocessing
+    
+    # Process from scratch
+    with st.spinner(f"处理 {filename} 中 (使用pdf2htmlEX转换)..."):
+        # First get explanations (reuse markdown processing for explanation generation)
+        markdown_result = cached_process_markdown(src_bytes, params)
+        
+        if markdown_result.get("status") == "completed":
+            # Generate HTML pdf2htmlEX document
+            try:
+                base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                # Use user-configured title if provided, otherwise use filename
+                title = params.get("markdown_title", "").strip() or base_name
+                html_content = pdf_processor.generate_html_pdf2htmlex_document(
+                    src_bytes=src_bytes,
+                    explanations=markdown_result["explanations"],
+                    title=title,
+                    font_name=params.get("cjk_font_name", "SimHei"),
+                    font_size=params.get("font_size", 14),
+                    line_spacing=params.get("line_spacing", 1.2),
+                    column_count=params.get("html_column_count", 2),
+                    column_gap=params.get("html_column_gap", 20),
+                    show_column_rule=params.get("html_show_column_rule", True)
+                )
+                return {
+                    "status": "completed",
+                    "html_content": html_content,
+                    "explanations": markdown_result["explanations"],
+                    "failed_pages": markdown_result.get("failed_pages", [])
+                }
+            except Exception as e:
+                return {
+                    "status": "failed",
+                    "html_content": None,
+                    "explanations": {},
+                    "failed_pages": [],
+                    "error": f"HTML-pdf2htmlEX生成失败: {str(e)}"
+                }
+        else:
+            return markdown_result
+
+
 def process_single_file(
     src_bytes: bytes,
     filename: str,
@@ -347,6 +440,10 @@ def process_single_file(
             )
         elif output_mode == "HTML截图版":
             return process_single_file_html_screenshot(
+                None, filename, src_bytes, params, cached_result, file_hash
+            )
+        elif output_mode == "HTML-pdf2htmlEX版":
+            return process_single_file_html_pdf2htmlex(
                 None, filename, src_bytes, params, cached_result, file_hash
             )
         else:
@@ -482,6 +579,52 @@ def build_zip_cache_markdown(batch_results: Dict[str, Dict[str, Any]]) -> Option
 def build_zip_cache_html_screenshot(batch_results: Dict[str, Dict[str, Any]]) -> Optional[bytes]:
     """
     Build ZIP cache for HTML Screenshot mode results.
+    
+    Args:
+        batch_results: Batch processing results
+        
+    Returns:
+        ZIP file bytes or None
+    """
+    import io
+    import zipfile
+    import json
+    import os
+    
+    completed_any = any(
+        r.get("status") == "completed" and r.get("html_content")
+        for r in batch_results.values()
+    )
+    
+    if not completed_any:
+        return None
+    
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for fname, res in batch_results.items():
+            if res.get("status") == "completed" and res.get("html_content"):
+                base_name = os.path.splitext(fname)[0]
+                html_filename = f"{base_name}讲解文档.html"
+                zip_file.writestr(html_filename, res["html_content"])
+                if res.get("explanations"):
+                    try:
+                        json_bytes = json.dumps(
+                            res["explanations"], 
+                            ensure_ascii=False, 
+                            indent=2
+                        ).encode("utf-8")
+                        json_filename = f"{base_name}.json"
+                        zip_file.writestr(json_filename, json_bytes)
+                    except Exception:
+                        pass
+    
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
+
+def build_zip_cache_html_pdf2htmlex(batch_results: Dict[str, Dict[str, Any]]) -> Optional[bytes]:
+    """
+    Build ZIP cache for HTML pdf2htmlEX mode results.
     
     Args:
         batch_results: Batch processing results
