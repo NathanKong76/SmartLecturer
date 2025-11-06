@@ -548,19 +548,23 @@ class HTMLPdf2htmlEXGenerator:
         }
 
 
-        /* PDF 页面外层容器样式 */
+        /* 
+         * PDF 页面外层容器样式
+         * 这部分样式用于包裹每页 pdf2htmlEX 生成的 HTML 内容，是每一页的“外层包裹”。
+         * 各属性说明如下：
+         */
         .pdf2htmlex-container .pdf2htmlex-page {
-        margin: 0 auto 0px auto;
-        background: white;
-        border-radius: 4px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-        padding: 0; /* 重要：由 JS 统一设置动态 padding，避免双重 padding */
-        overflow: visible;
-        transition: all 0.3s ease;
-        position: relative;
-        transform-origin: top left; /* 重要：统一从左上角缩放 */
-        display: block;
-        box-sizing: content-box; /* width/height 为内容尺寸，不含 padding */
+            margin: 0 auto 0px auto;         /* 居中显示，每页下方 0px 间隔，左右自动居中 */
+            background: white;               /* 背景色为纯白，确保页面本身无杂色 */
+            border-radius: 4px;              /* 轻微圆角，让边缘更加柔和 */
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15); /* 添加阴影效果，略微突出页面 */
+            padding: 0;    /* 重要：padding 统一设为0，后续 JS 根据容器宽度动态设置 padding，避免双重 padding 导致尺寸问题 */
+            overflow: visible;               /* 内容如超出也允许展示，防止被裁切 */
+            transition: all 0.3s ease;       /* 所有属性的变动（如缩放、高亮）有平滑过渡效果 */
+            position: relative;              /* 建立定位上下文，为后代元素（如角标）绝对定位做准备 */
+            transform-origin: top left; /* 重要：页面缩放/变换以左上角为基准，避免右下偏移且便于对齐 */
+            display: block;                  /* 标准块级显示 */
+            box-sizing: content-box;         /* width/height 只包含内容本身，不包含 padding，便于 JS 精确控制宽高 */
         }
 
 
@@ -780,7 +784,8 @@ class HTMLPdf2htmlEXGenerator:
             const containerWidth = container.clientWidth; // 内边距在 CSS 已统一
             // 动态 padding：避免紧贴边
             const dynamicPadding = Math.min(Math.max(Math.round(containerWidth * 0.03), 6), 24);
-            const availableWidth = Math.max(containerWidth - dynamicPadding * 2, containerWidth * 0.5);
+            const SAFETY = 47;
+            const availableWidth = Math.max(containerWidth - dynamicPadding * 2 - SAFETY,containerWidth * 0.5);
 
             pages.forEach(page => {{
                 const originalPage = page.querySelector('.pf');
