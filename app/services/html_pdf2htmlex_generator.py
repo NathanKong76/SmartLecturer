@@ -555,8 +555,8 @@ class HTMLPdf2htmlEXGenerator:
          */
         .pdf2htmlex-container .pdf2htmlex-page {
             margin: 0 auto 0px auto;         /* 居中显示，每页下方 0px 间隔，左右自动居中 */
-            background: white;               /* 背景色为纯白，确保页面本身无杂色 */
-            border-radius: 4px;              /* 轻微圆角，让边缘更加柔和 */
+            background: transparent;               /* 背景色为纯白，确保页面本身无杂色 */
+            border-radius: 16px;              /* 轻微圆角，让边缘更加柔和 */
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15); /* 添加阴影效果，略微突出页面 */
             padding: 0;    /* 重要：padding 统一设为0，后续 JS 根据容器宽度动态设置 padding，避免双重 padding 导致尺寸问题 */
             overflow: visible;               /* 内容如超出也允许展示，防止被裁切 */
@@ -601,6 +601,29 @@ class HTMLPdf2htmlEXGenerator:
         .screenshots-panel {
         padding: 5px !important;
         overflow: auto; /* 重要：防止右下被硬裁切 */
+        }
+
+
+        /* 1) 左侧滚动面板可能有默认 padding */
+        .screenshots-panel { padding-top: 0 !important; }
+
+        /* 2) pdf2htmlEX 外层容器不留顶边 */
+        .pdf2htmlex-container { padding-top: 0 !important; margin-top: 0 !important; }
+
+        /* 3) 每页卡片不留顶边（你已设 padding:0，这里再保险） */
+        .pdf2htmlex-container .pdf2htmlex-page {
+        padding-top: 0 !important;
+        margin-top: 0 !important;
+        background: transparent;    /* 若想彻底无白框，可去掉白底 */
+        border-radius: 0;           /* 去圆角避免看起来像白边 */
+        box-shadow: none;           /* 去阴影避免“边框”错觉 */
+        }
+
+        /* 4) 关键：pdf2htmlEX 生成的内部层级有时会有 top/margin */
+        .pdf2htmlex-container .pdf2htmlex-page .pf,
+        .pdf2htmlex-container .pdf2htmlex-page .pc {
+        top: 0 !important;
+        margin-top: 0 !important;
         }
         """
         
@@ -784,7 +807,7 @@ class HTMLPdf2htmlEXGenerator:
             const containerWidth = container.clientWidth; // 内边距在 CSS 已统一
             // 动态 padding：避免紧贴边
             const dynamicPadding = Math.min(Math.max(Math.round(containerWidth * 0.03), 6), 24);
-            const SAFETY = 47;
+            const SAFETY = 5;
             const availableWidth = Math.max(containerWidth - dynamicPadding * 2 - SAFETY,containerWidth * 0.5);
 
             pages.forEach(page => {{
@@ -794,7 +817,7 @@ class HTMLPdf2htmlEXGenerator:
                 page.style.transform = '';
                 page.style.width = '';
                 page.style.height = '';
-                page.style.padding = dynamicPadding + 'px'; // 只保留这一处 padding
+                page.style.padding = '0px'//dynamicPadding + 'px'; // 只保留这一处 padding
 
                 if (originalPage) {{
                     originalPage.style.transform = '';
