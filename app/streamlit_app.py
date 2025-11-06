@@ -83,11 +83,21 @@ def sidebar_form():
 			st.divider()
 		elif output_mode == "HTML截图版":
 			st.subheader("🌐 HTML 截图版参数")
-			screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
-			html_column_count = st.slider("分栏数量", 1, 3, 2, 1, help="讲解内容的分栏数量，类似Word分栏排版")
-			html_column_gap = st.slider("栏间距(px)", 10, 40, 20, 2, help="分栏之间的间距")
+			
+			col1, col2 = st.columns(2)
+			with col1:
+				screenshot_dpi = st.slider("截图DPI", 72, 300, 150, 12, help="截图质量，较高DPI生成更清晰的图片，但文件更大")
+			with col2:
+				font_size = st.number_input("讲解字体大小", min_value=10, max_value=24, value=14, step=1, help="讲解文字的字体大小")
+			
+			col1, col2 = st.columns(2)
+			with col1:
+				html_column_count = st.slider("分栏数量", 1, 3, 2, 1, help="讲解内容的分栏数量，类似Word分栏排版")
+			with col2:
+				html_column_gap = st.slider("栏间距(px)", 10, 40, 20, 2, help="分栏之间的间距")
+			
 			html_show_column_rule = st.checkbox("显示栏间分隔线", value=True, help="在分栏之间显示分隔线")
-			markdown_title = st.text_input("文档标题", value="PDF文档讲解")
+			markdown_title = st.text_input("文档标题", value="PDF文档讲解", help="HTML文档的标题（留空则使用文件名）")
 			embed_images = True
 			st.divider()
 		else:  # PDF讲解版
@@ -790,11 +800,13 @@ def main():
 
 					# 生成HTML文档
 					base_name = os.path.splitext(pdf_name)[0]
+					# Use user-configured title if provided, otherwise use filename
+					title = params.get("markdown_title", "").strip() or base_name
 					html_content = pdf_processor.generate_html_screenshot_document(
 						src_bytes=pdf_bytes,
 						explanations=explanations,
 						screenshot_dpi=params.get("screenshot_dpi", 150),
-						title=base_name,
+						title=title,
 						font_name=params.get("cjk_font_name", "SimHei"),
 						font_size=params.get("font_size", 14),
 						line_spacing=params.get("line_spacing", 1.2),

@@ -242,11 +242,13 @@ def process_single_file_html_screenshot(
         try:
             # Generate HTML from cached explanations
             base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+            # Use user-configured title if provided, otherwise use filename
+            title = params.get("markdown_title", "").strip() or base_name
             html_content = pdf_processor.generate_html_screenshot_document(
                 src_bytes=src_bytes,
                 explanations=cached_result["explanations"],
                 screenshot_dpi=params.get("screenshot_dpi", 150),
-                title=base_name,
+                title=title,
                 font_name=params.get("cjk_font_name", "SimHei"),
                 font_size=params.get("font_size", 14),
                 line_spacing=params.get("line_spacing", 1.2),
@@ -273,11 +275,13 @@ def process_single_file_html_screenshot(
             # Generate HTML screenshot document
             try:
                 base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                # Use user-configured title if provided, otherwise use filename
+                title = params.get("markdown_title", "").strip() or base_name
                 html_content = pdf_processor.generate_html_screenshot_document(
                     src_bytes=src_bytes,
                     explanations=markdown_result["explanations"],
                     screenshot_dpi=params.get("screenshot_dpi", 150),
-                    title=base_name,
+                    title=title,
                     font_name=params.get("cjk_font_name", "SimHei"),
                     font_size=params.get("font_size", 14),
                     line_spacing=params.get("line_spacing", 1.2),

@@ -496,25 +496,26 @@ body.dark-mode .font-controls {{
 }}
 
 .font-controls-toggle {{
-    position: fixed;
-    bottom: 30px;
-    right: 30px;
-    width: 50px;
-    height: 50px;
+    position: absolute;
+    right: 75px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 45px;
+    height: 45px;
     border-radius: 50%;
-    background: var(--accent-color);
+    background: rgba(255, 255, 255, 0.2);
     color: white;
     border: none;
-    font-size: 20pt;
+    font-size: 18pt;
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(14, 165, 233, 0.4);
+    backdrop-filter: blur(10px);
     z-index: 1001;
     transition: all 0.3s ease;
 }}
 
 .font-controls-toggle:hover {{
-    transform: scale(1.1);
-    box-shadow: 0 6px 16px rgba(14, 165, 233, 0.5);
+    transform: translateY(-50%) scale(1.1);
+    background: rgba(255, 255, 255, 0.3);
 }}
 
 .font-control-group {{
@@ -683,10 +684,10 @@ body.dark-mode .font-controls {{
     }}
     
     .font-controls-toggle {{
-        right: 20px;
-        bottom: 20px;
-        width: 45px;
-        height: 45px;
+        right: 65px;
+        width: 40px;
+        height: 40px;
+        font-size: 16pt;
     }}
 }}
 
@@ -753,11 +754,10 @@ body.dark-mode .font-controls {{
     }}
     
     .font-controls-toggle {{
-        right: 10px;
-        bottom: 10px;
-        width: 40px;
-        height: 40px;
-        font-size: 16pt;
+        right: 55px;
+        width: 35px;
+        height: 35px;
+        font-size: 14pt;
     }}
 }}
 
@@ -1056,6 +1056,10 @@ class ScreenshotExplanationSync {{
         
         // Restore scroll position for this page, or scroll to top if first visit
         if (explanationsPanel) {{
+            // Temporarily disable smooth scrolling for instant position restore
+            const originalBehavior = explanationsPanel.style.scrollBehavior;
+            explanationsPanel.style.scrollBehavior = 'auto';
+            
             if (this.pageScrollPositions[pageNum] !== undefined) {{
                 // Restore previous scroll position
                 explanationsPanel.scrollTop = this.pageScrollPositions[pageNum];
@@ -1063,6 +1067,11 @@ class ScreenshotExplanationSync {{
                 // First visit to this page, scroll to top
                 explanationsPanel.scrollTop = 0;
             }}
+            
+            // Restore smooth scrolling for manual scrolling
+            setTimeout(() => {{
+                explanationsPanel.style.scrollBehavior = originalBehavior;
+            }}, 0);
         }}
         
         // Update page indicator
@@ -1243,6 +1252,7 @@ window.goToPage = function(pageNum) {{
                     <h1>📚 {title}</h1>
                     <div class="current-page-indicator">第 1 页 / 共 {total_pages} 页</div>
                 </div>
+                <button class="font-controls-toggle" title="字体设置">Aa</button>
                 <button class="theme-toggle" title="切换主题">🌙</button>
             </div>
             <div class="explanations-container">
@@ -1257,9 +1267,6 @@ window.goToPage = function(pageNum) {{
         <span class="page-info">1 / {total_pages}</span>
         <button class="nav-btn" id="next-btn" title="下一页 (↓)">下一页 ›</button>
     </div>
-    
-    <!-- Font Controls Toggle Button -->
-    <button class="font-controls-toggle" title="字体设置">Aa</button>
     
     <!-- Font Controls Panel -->
     <div class="font-controls">
