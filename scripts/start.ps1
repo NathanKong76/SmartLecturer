@@ -99,22 +99,51 @@ if (Test-Path $envPath) {
     }
 }
 
-$apiKey = $env:GEMINI_API_KEY
-if ([string]::IsNullOrEmpty($apiKey)) {
-    Write-Warning "未设置 GEMINI_API_KEY 环境变量"
-    Write-Info "请设置环境变量或创建 .env 文件"
-    Write-Host ""
-    Write-Info "设置方式:"
-    Write-Info '  $env:GEMINI_API_KEY = "你的_API_KEY"'
-    Write-Info "  或创建 .env 文件: GEMINI_API_KEY=你的_API_KEY"
-    Write-Host ""
-    $continue = Read-Host "是否继续启动？(Y/N)"
-    if ($continue -ne "Y" -and $continue -ne "y") {
-        exit 0
-    }
+$provider = $env:LLM_PROVIDER
+if ([string]::IsNullOrWhiteSpace($provider)) {
+    $provider = "gemini"
 }
-else {
-    Write-Success "找到 GEMINI_API_KEY"
+
+switch ($provider.ToLower()) {
+    "openai" {
+        $apiKey = $env:OPENAI_API_KEY
+        if ([string]::IsNullOrEmpty($apiKey)) {
+            Write-Warning "未设置 OPENAI_API_KEY 环境变量"
+            Write-Info "请设置环境变量或创建 .env 文件"
+            Write-Host ""
+            Write-Info "设置方式:"
+            Write-Info '  $env:OPENAI_API_KEY = "你的_OPENAI_API_KEY"'
+            Write-Info "  可选: $env:OPENAI_API_BASE = \"https://你的自定义域名/v1\""
+            Write-Info "  或在 .env 中设置 OPENAI_API_KEY、OPENAI_API_BASE"
+            Write-Host ""
+            $continue = Read-Host "是否继续启动？(Y/N)"
+            if ($continue -ne "Y" -and $continue -ne "y") {
+                exit 0
+            }
+        }
+        else {
+            Write-Success "找到 OPENAI_API_KEY"
+        }
+    }
+    default {
+        $apiKey = $env:GEMINI_API_KEY
+        if ([string]::IsNullOrEmpty($apiKey)) {
+            Write-Warning "未设置 GEMINI_API_KEY 环境变量"
+            Write-Info "请设置环境变量或创建 .env 文件"
+            Write-Host ""
+            Write-Info "设置方式:"
+            Write-Info '  $env:GEMINI_API_KEY = "你的_GEMINI_API_KEY"'
+            Write-Info "  或创建 .env 文件: GEMINI_API_KEY=你的_GEMINI_API_KEY"
+            Write-Host ""
+            $continue = Read-Host "是否继续启动？(Y/N)"
+            if ($continue -ne "Y" -and $continue -ne "y") {
+                exit 0
+            }
+        }
+        else {
+            Write-Success "找到 GEMINI_API_KEY"
+        }
+    }
 }
 
 # Start Streamlit

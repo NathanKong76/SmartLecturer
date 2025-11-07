@@ -89,9 +89,9 @@ Write-Info "Python site-packages: $pythonPath"
 
 # Collect package metadata files
 $metadataFiles = @()
-$packages = @('streamlit', 'langchain', 'langchain_google_genai', 'google-generativeai', 
+$packages = @('streamlit', 'langchain', 'langchain_google_genai', 'langchain_openai', 'google-generativeai', 
               'PyMuPDF', 'Pillow', 'python-dotenv', 'tqdm', 'markdown', 
-              'beautifulsoup4', 'pymdown-extensions')
+              'beautifulsoup4', 'pymdown-extensions', 'openai')
 
 foreach ($pkg in $packages) {
     # Try .dist-info first
@@ -150,7 +150,9 @@ a = Analysis(
         'importlib_metadata',
         'langchain',
         'langchain_google_genai',
+        'langchain_openai',
         'google.generativeai',
+        'openai',
         'PIL',
         'pymupdf',
         'dotenv',

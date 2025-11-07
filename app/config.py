@@ -18,7 +18,9 @@ class AppConfig:
     """Application configuration with validation."""
     
     # API Configuration
+    llm_provider: str = "gemini"
     api_key: str = ""
+    api_base: Optional[str] = None
     model_name: str = "gemini-2.5-pro"
     temperature: float = 0.4
     max_tokens: int = 4096
@@ -58,6 +60,11 @@ class AppConfig:
             validate_right_ratio, validate_dpi
         )
         
+        # Normalize provider string
+        self.llm_provider = (self.llm_provider or "gemini").lower()
+        if self.llm_provider not in ("gemini", "openai"):
+            raise ValueError(f"Unsupported llm_provider: {self.llm_provider}")
+
         # Validate numeric parameters
         is_valid, error = validate_font_size(self.font_size)
         if not is_valid:
@@ -86,9 +93,27 @@ class AppConfig:
     @classmethod
     def from_env(cls) -> 'AppConfig':
         """Load configuration from environment variables."""
+        provider = os.getenv('LLM_PROVIDER', 'gemini').lower()
+
+        if provider == 'openai':
+            api_key = os.getenv('OPENAI_API_KEY', os.getenv('API_KEY', ''))
+            api_base = os.getenv('OPENAI_API_BASE', os.getenv('LLM_API_BASE', 'https://api.openai.com/v1'))
+            model_name_env = os.getenv('OPENAI_MODEL_NAME')
+            default_model = 'gpt-4o-mini'
+        else:
+            provider = 'gemini'
+            api_key = os.getenv('GEMINI_API_KEY', os.getenv('API_KEY', ''))
+            api_base = os.getenv('GEMINI_API_BASE', os.getenv('LLM_API_BASE', None))
+            model_name_env = os.getenv('GEMINI_MODEL_NAME')
+            default_model = 'gemini-2.5-pro'
+
+        model_name = model_name_env or os.getenv('MODEL_NAME', default_model)
+
         return cls(
-            api_key=os.getenv('GEMINI_API_KEY', ''),
-            model_name=os.getenv('MODEL_NAME', 'gemini-2.5-pro'),
+            llm_provider=provider,
+            api_key=api_key,
+            api_base=api_base,
+            model_name=model_name,
             temperature=float(os.getenv('TEMPERATURE', '0.4')),
             max_tokens=int(os.getenv('MAX_TOKENS', '4096')),
             dpi=int(os.getenv('DPI', '180')),
@@ -124,8 +149,12 @@ class AppConfig:
     @classmethod
     def from_params(cls, params: dict) -> 'AppConfig':
         """Create configuration from UI parameters dictionary."""
+        provider = (params.get("llm_provider") or "gemini").lower()
+        api_base = params.get("api_base") or None
         return cls(
+            llm_provider=provider,
             api_key=params.get("api_key", ""),
+            api_base=api_base,
             model_name=params.get("model_name", "gemini-2.5-pro"),
             temperature=params.get("temperature", 0.4),
             max_tokens=params.get("max_tokens", 4096),
@@ -152,7 +181,9 @@ class AppConfig:
     def to_dict(self) -> dict:
         """Convert configuration to dictionary for backward compatibility."""
         return {
+            "llm_provider": self.llm_provider,
             "api_key": self.api_key,
+            "api_base": self.api_base,
             "model_name": self.model_name,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,

@@ -195,6 +195,8 @@ def process_single_file_markdown(
                 title=params["markdown_title"],
                 use_context=params.get("use_context", False),
                 context_prompt=params.get("context_prompt", None),
+			llm_provider=params.get("llm_provider", "gemini"),
+			api_base=params.get("api_base"),
             )
             return {
                 "status": "completed",

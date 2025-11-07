@@ -112,7 +112,9 @@ def cached_process_pdf(src_bytes: bytes, params: dict) -> dict:
 			tpm_budget=params["tpm_budget"],
 			rpd_limit=params["rpd_limit"],
 			use_context=params.get("use_context", False),
-			context_prompt=params.get("context_prompt", None),
+				context_prompt=params.get("context_prompt", None),
+				llm_provider=params.get("llm_provider", "gemini"),
+				api_base=params.get("api_base"),
 		)
 		
 		result_bytes = pdf_processor.compose_pdf(
@@ -178,6 +180,8 @@ def cached_process_markdown(src_bytes: bytes, params: dict) -> dict:
 				title=params["markdown_title"],
 				use_context=params.get("use_context", False),
 				context_prompt=params.get("context_prompt", None),
+				llm_provider=params.get("llm_provider", "gemini"),
+				api_base=params.get("api_base"),
 			)
 			cached_result["markdown_content"] = markdown_content
 			return cached_result
@@ -210,6 +214,8 @@ def cached_process_markdown(src_bytes: bytes, params: dict) -> dict:
 			title=params["markdown_title"],
 			use_context=params.get("use_context", False),
 			context_prompt=params.get("context_prompt", None),
+		llm_provider=params.get("llm_provider", "gemini"),
+		api_base=params.get("api_base"),
 		)
 		
 		result = {

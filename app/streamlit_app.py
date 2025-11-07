@@ -120,16 +120,52 @@ def sidebar_form():
 		# 3. API 配置
 		# ============================================
 		with st.expander("🔑 API 配置", expanded=True):
+			provider_options = ["Gemini", "OpenAI"]
+			env_provider = os.getenv('LLM_PROVIDER', 'gemini').lower()
+			default_provider_index = 1 if env_provider == 'openai' else 0
+			provider_label = st.radio(
+				"LLM 提供方",
+				provider_options,
+				index=default_provider_index,
+				key="llm_provider_selector"
+			)
+			llm_provider = 'openai' if provider_label == "OpenAI" else 'gemini'
+			
+			if llm_provider == 'openai':
+				default_api_key = os.getenv('OPENAI_API_KEY', os.getenv('API_KEY', ''))
+				api_key_help = "您的 OpenAI API 密钥"
+				default_model = os.getenv('OPENAI_MODEL_NAME', os.getenv('MODEL_NAME', 'gpt-4o-mini'))
+				model_help = "使用的 OpenAI 模型"
+				api_base_default = os.getenv('OPENAI_API_BASE', os.getenv('LLM_API_BASE', 'https://api.openai.com/v1')) or ""
+				api_base_input = st.text_input(
+					"API Base URL",
+					value=api_base_default,
+					help="OpenAI 兼容接口基础地址，可根据需要修改。",
+					key="llm_api_base"
+				)
+				api_base = api_base_input.strip() or None
+			else:
+				default_api_key = os.getenv('GEMINI_API_KEY', os.getenv('API_KEY', ''))
+				api_key_help = "您的 Gemini API 密钥"
+				default_model = os.getenv('GEMINI_MODEL_NAME', os.getenv('MODEL_NAME', 'gemini-2.5-pro'))
+				model_help = "使用的 Gemini 模型"
+				api_base_env = os.getenv('GEMINI_API_BASE', os.getenv('LLM_API_BASE', ''))
+				api_base = (api_base_env.strip() if api_base_env else None)
+				# 占位以确保 Streamlit 保留先前输入
+				st.session_state.setdefault("llm_api_base", api_base or "")
+			
 			api_key = st.text_input(
-				"GEMINI_API_KEY", 
-				value=os.getenv('GEMINI_API_KEY'),
+				"API Key",
+				value=default_api_key,
 				type="password",
-				help="您的 Gemini API 密钥"
+				help=api_key_help,
+				key="llm_api_key"
 			)
 			model_name = st.text_input(
-				"模型名称", 
-				value="gemini-2.5-pro",
-				help="使用的 Gemini 模型"
+				"模型名称",
+				value=default_model,
+				help=model_help,
+				key="llm_model_name"
 			)
 			
 			col1, col2 = st.columns(2)
@@ -298,7 +334,9 @@ def sidebar_form():
 		
 	
 	return {
+		"llm_provider": llm_provider,
 		"api_key": api_key,
+		"api_base": api_base,
 		"model_name": model_name,
 		"temperature": float(temperature),
 		"max_tokens": int(max_tokens),
@@ -543,7 +581,9 @@ def main():
 										on_progress=on_file_progress,
 										on_log=on_file_log,
 										use_context=params.get("use_context", False),
-										context_prompt=params.get("context_prompt", None),
+									context_prompt=params.get("context_prompt", None),
+									llm_provider=params.get("llm_provider", "gemini"),
+									api_base=params.get("api_base"),
 									)
 
 									result_bytes = pdf_processor.compose_pdf(

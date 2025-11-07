@@ -8,7 +8,9 @@
 
 - **Python**: 3.10 或更高版本
 - **操作系统**: Windows（PowerShell）或 Linux/macOS
-- **API Key**: Google Gemini API Key（需要自行获取）
+- **API Key**: 至少配置一种 LLM 凭据
+  - Google Gemini（`GEMINI_API_KEY`）
+  - 或 OpenAI 兼容接口（`OPENAI_API_KEY`，可选 `OPENAI_API_BASE`）
 
 ## 快速开始
 
@@ -25,13 +27,16 @@
    .\scripts\install.ps1
    ```
 
-3. **设置 API Key**
+3. **设置 LLM 配置**
    ```powershell
    # 方式一：创建 .env 文件
    # 复制 .env.example 为 .env，然后编辑添加你的 API Key
    
    # 方式二：设置环境变量
+   $env:LLM_PROVIDER = "gemini"            # gemini / openai
    $env:GEMINI_API_KEY = "你的_GEMINI_API_KEY"
+   $env:OPENAI_API_KEY = "你的_OPENAI_API_KEY"   # 使用 OpenAI 时设置
+   $env:OPENAI_API_BASE = "https://你的自定义域名/v1"  # 自定义兼容接口
    ```
 
 4. **启动应用**
@@ -53,14 +58,17 @@
    ./scripts/install.sh
    ```
 
-3. **设置 API Key**
+3. **设置 LLM 配置**
    ```bash
    # 方式一：创建 .env 文件
    cp .env.example .env
    # 编辑 .env 文件，添加你的 API Key
    
    # 方式二：设置环境变量
+   export LLM_PROVIDER="gemini"
    export GEMINI_API_KEY="你的_GEMINI_API_KEY"
+   export OPENAI_API_KEY="你的_OPENAI_API_KEY"
+   export OPENAI_API_BASE="https://你的自定义域名/v1"
    ```
 
 4. **启动应用**
@@ -147,7 +155,7 @@ chmod +x scripts/install-pdf2htmlex-linux.sh
 1. **启动应用**后，浏览器会自动打开应用界面（默认地址：http://localhost:8501）
 
 2. **配置参数**：
-   - 在左侧边栏设置 `GEMINI_API_KEY`（如果未在环境变量中设置）
+   - 在左侧边栏选择 LLM 提供方，设置对应的 API Key（如 `GEMINI_API_KEY` 或 `OPENAI_API_KEY`）
    - 选择输出模式（PDF讲解版、Markdown截图讲解、HTML截图版、HTML-pdf2htmlEX版）
    - 调整其他参数（温度、并发数等）
 
@@ -188,8 +196,8 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ### 运行问题
 
-**Q: 启动时提示找不到 GEMINI_API_KEY**
-A: 请设置环境变量或创建 .env 文件，参考"快速开始"部分
+**Q: 启动时提示缺少 API Key**
+A: 请根据所选 LLM 提供方设置对应的环境变量（Gemini 使用 `GEMINI_API_KEY`，OpenAI 使用 `OPENAI_API_KEY`），参考"快速开始"部分
 
 **Q: 应用启动失败**
 A: 确保虚拟环境已正确创建，尝试重新运行安装脚本

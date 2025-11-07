@@ -200,8 +200,10 @@ streamlit run app/streamlit_app.py
 
 #### 🔑 API 配置
 
-- **GEMINI_API_KEY**: 您的 Gemini API 密钥
-- **模型名称**: 默认 `gemini-2.5-pro`
+- **LLM 提供方**: 可在 Gemini 与 OpenAI 之间切换
+- **API 密钥**: 对应提供方的密钥（`GEMINI_API_KEY` 或 `OPENAI_API_KEY`）
+- **API Base URL**: 使用 OpenAI 兼容接口时填写（如 Azure、自建服务）
+- **模型名称**: 默认 `gemini-2.5-pro` / `gpt-4o-mini`
 - **温度**: 控制输出随机性（0.4 推荐）
 - **最大输出 Tokens**: 单次响应长度限制（4096 推荐）
 

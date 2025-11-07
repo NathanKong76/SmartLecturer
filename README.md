@@ -1,12 +1,13 @@
 推荐使用HTML-pdf2htmlEX版，排版几乎完美，支持手机和电脑端浏览器使用。但是要安装pdf2htmlEX
-# PDF 讲解流 · Gemini 2.5 Pro
+# PDF 讲解流 · Gemini / OpenAI
 
-一个基于 Streamlit 的本地应用：批量读取 PDF，逐页调用 Google Gemini 生成中文讲解，支持多种输出格式（PDF讲解版、Markdown截图讲解、HTML截图版、HTML-pdf2htmlEX版）。支持批量下载、讲解 JSON 导出/导入与仅合成模式。
+一个基于 Streamlit 的本地应用：批量读取 PDF，逐页调用 Google Gemini 或 OpenAI（含自定义兼容接口）生成中文讲解，支持多种输出格式（PDF讲解版、Markdown截图讲解、HTML截图版、HTML-pdf2htmlEX版）。支持批量下载、讲解 JSON 导出/导入与仅合成模式。
 
 ## 功能特性
 
 ### 核心功能
 - **批量处理**：一次上传最多 20 个 PDF，逐页生成讲解并合成讲解版文档。
+- **多模型支持**：内置 Gemini 2.5 Pro，亦可切换到 OpenAI GPT-4o/GPT-4o-mini，或使用自定义 OpenAI 兼容接口（如 Azure OpenAI、本地服务）。
 - **四种输出模式**：
   - **PDF讲解版**：在PDF右侧添加讲解文字，保持矢量内容，三栏排版
   - **Markdown截图讲解**：生成包含页面截图和讲解的 Markdown 文档
@@ -30,7 +31,9 @@
 
 - Python 3.10+
 - Windows（PowerShell）或 Linux/macOS
-- Google Gemini API Key（环境变量 `GEMINI_API_KEY`）
+- 至少配置一种 LLM：
+  - Google Gemini（环境变量 `GEMINI_API_KEY`）
+  - 或 OpenAI 及兼容服务（环境变量 `OPENAI_API_KEY`，可选 `OPENAI_API_BASE`）
 - （可选）pdf2htmlEX：仅在使用 HTML-pdf2htmlEX 模式时需要
 
 ## 安装步骤
@@ -105,12 +108,18 @@ pip install -r requirements.txt
 
 ```powershell
 # Windows PowerShell
+$env:LLM_PROVIDER = "gemini"            # 可选：gemini / openai
 $env:GEMINI_API_KEY = "你的_GEMINI_API_KEY"
+$env:OPENAI_API_KEY = "你的_OPENAI_API_KEY"   # 仅在使用 OpenAI 时需要
+$env:OPENAI_API_BASE = "https://你的自定义域名/v1"  # 可选，自定义兼容接口地址
 ```
 
 ```bash
 # Linux/macOS
+export LLM_PROVIDER="gemini"
 export GEMINI_API_KEY="你的_GEMINI_API_KEY"
+export OPENAI_API_KEY="你的_OPENAI_API_KEY"
+export OPENAI_API_BASE="https://你的自定义域名/v1"
 ```
 
 **方式二：使用 .env 文件**
@@ -118,7 +127,12 @@ export GEMINI_API_KEY="你的_GEMINI_API_KEY"
 在项目根目录创建 `.env` 文件（注意使用 UTF-8 无 BOM 编码）：
 
 ```text
+LLM_PROVIDER=gemini
 GEMINI_API_KEY=你的_GEMINI_API_KEY
+# ↓ 如需改用 OpenAI，仅需切换 PROVIDER 并设置密钥
+# LLM_PROVIDER=openai
+# OPENAI_API_KEY=你的_OPENAI_API_KEY
+# OPENAI_API_BASE=https://你的自定义域名/v1
 ```
 
 ### 4. （可选）安装 pdf2htmlEX

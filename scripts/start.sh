@@ -60,21 +60,45 @@ if [ -f "$ENV_PATH" ]; then
     set +a
 fi
 
-if [ -z "$GEMINI_API_KEY" ]; then
-    warning "未设置 GEMINI_API_KEY 环境变量"
-    info "请设置环境变量或创建 .env 文件"
-    echo ""
-    info "设置方式:"
-    info '  export GEMINI_API_KEY="你的_API_KEY"'
-    info "  或创建 .env 文件: GEMINI_API_KEY=你的_API_KEY"
-    echo ""
-    read -p "是否继续启动？(Y/N) " continue
-    if [ "$continue" != "Y" ] && [ "$continue" != "y" ]; then
-        exit 0
-    fi
-else
-    success "找到 GEMINI_API_KEY"
-fi
+PROVIDER=${LLM_PROVIDER:-gemini}
+
+case "${PROVIDER,,}" in
+    openai)
+        if [ -z "$OPENAI_API_KEY" ]; then
+            warning "未设置 OPENAI_API_KEY 环境变量"
+            info "请设置环境变量或创建 .env 文件"
+            echo ""
+            info "设置方式:"
+            info '  export OPENAI_API_KEY="你的_OPENAI_API_KEY"'
+            info '  可选: export OPENAI_API_BASE="https://你的自定义域名/v1"'
+            info "  或在 .env 中设置 OPENAI_API_KEY、OPENAI_API_BASE"
+            echo ""
+            read -p "是否继续启动？(Y/N) " continue
+            if [ "$continue" != "Y" ] && [ "$continue" != "y" ]; then
+                exit 0
+            fi
+        else
+            success "找到 OPENAI_API_KEY"
+        fi
+        ;;
+    *)
+        if [ -z "$GEMINI_API_KEY" ]; then
+            warning "未设置 GEMINI_API_KEY 环境变量"
+            info "请设置环境变量或创建 .env 文件"
+            echo ""
+            info "设置方式:"
+            info '  export GEMINI_API_KEY="你的_GEMINI_API_KEY"'
+            info "  或创建 .env 文件: GEMINI_API_KEY=你的_GEMINI_API_KEY"
+            echo ""
+            read -p "是否继续启动？(Y/N) " continue
+            if [ "$continue" != "Y" ] && [ "$continue" != "y" ]; then
+                exit 0
+            fi
+        else
+            success "找到 GEMINI_API_KEY"
+        fi
+        ;;
+esac
 
 # Start Streamlit
 echo ""
