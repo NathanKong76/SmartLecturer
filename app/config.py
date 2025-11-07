@@ -83,12 +83,25 @@ class AppConfig:
             raise ValueError(f"Invalid dpi in config: {error}")
         
         # Validate render_mode
-        if self.render_mode not in ("text", "markdown", "empty_right"):
-            raise ValueError(f"Invalid render_mode: {self.render_mode}")
-        
+        valid_render_modes = {"text", "markdown", "pandoc", "empty_right"}
+        if self.render_mode not in valid_render_modes:
+            raise ValueError(
+                f"Invalid render_mode: {self.render_mode}. "
+                f"Valid options: {', '.join(sorted(valid_render_modes))}"
+            )
+
         # Validate output_mode
-        if self.output_mode not in ("PDF讲解版", "Markdown截图讲解"):
-            raise ValueError(f"Invalid output_mode: {self.output_mode}")
+        valid_output_modes = {
+            "PDF讲解版",
+            "Markdown截图讲解",
+            "HTML截图版",
+            "HTML-pdf2htmlEX版",
+        }
+        if self.output_mode not in valid_output_modes:
+            raise ValueError(
+                f"Invalid output_mode: {self.output_mode}. "
+                f"Valid options: {', '.join(sorted(valid_output_modes))}"
+            )
     
     @classmethod
     def from_env(cls) -> 'AppConfig':

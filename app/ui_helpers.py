@@ -88,6 +88,9 @@ def validate_file_upload(uploaded_files: List, params: Dict[str, Any]) -> Tuple[
         return False, f"最多只能上传{constants.MAX_FILES_PER_BATCH}个文件"
     
     if not params.get("api_key"):
+        provider = (params.get("llm_provider") or "gemini").lower()
+        if provider == "openai":
+            return False, "请在侧边栏填写 OpenAI API Key"
         return False, "请在侧边栏填写 GEMINI_API_KEY"
     
     return True, None
