@@ -88,7 +88,7 @@ class DetailedProgressTracker:
         
         # Stage definitions based on mode
         if processing_mode == "batch_generation":
-            self.stages = ["渲染PDF页面", "生成讲解", "合成文档"]
+            self.stages = ["给PDF页面截图", "用LLM生成讲解（html也会在此阶段生成）", "合成文档"]
         else:  # json_regeneration
             self.stages = ["匹配和解析JSON", "合成文档"]
         
@@ -214,7 +214,8 @@ class DetailedProgressTracker:
         filename: str,
         page_index: int,
         status: str,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        is_retry: bool = False
     ) -> None:
         """
         Update status for a specific page (thread-safe).
@@ -222,15 +223,24 @@ class DetailedProgressTracker:
         Args:
             filename: File name
             page_index: Page index (0-based)
-            status: Status (processing/completed/failed)
+            status: Status (processing/completed/failed/retrying)
             error: Error message if failed
+            is_retry: Whether this is a retry attempt
         """
         with self._lock:
             if filename in self.file_progress:
                 file_prog = self.file_progress[filename]
-                file_prog.page_statuses[page_index] = status
+                # Use "retrying" status if it's a retry attempt and status is processing
+                if is_retry and status == "processing":
+                    file_prog.page_statuses[page_index] = "retrying"
+                else:
+                    file_prog.page_statuses[page_index] = status
                 
                 if status == "completed":
+                    # Remove from failed pages if it was previously failed
+                    if page_index in file_prog.failed_pages:
+                        file_prog.failed_pages.remove(page_index)
+                        self.failed_pages_count = max(0, self.failed_pages_count - 1)
                     # Update completed pages count
                     if page_index + 1 > file_prog.completed_pages:
                         file_prog.completed_pages = page_index + 1
@@ -468,6 +478,8 @@ class DetailedProgressTracker:
                                     st.write(f"✅ {page_idx + 1}")
                                 elif status == "failed":
                                     st.write(f"❌ {page_idx + 1}")
+                                elif status == "retrying":
+                                    st.write(f"🔄 {page_idx + 1} (重试)")
                                 elif status == "processing":
                                     st.write(f"🔄 {page_idx + 1}")
                                 else:
@@ -536,11 +548,39 @@ class DetailedProgressTracker:
     
     def _do_render(self) -> None:
         """Internal method to perform the actual rendering."""
-        self.render_overview()
-        self.render_details()
-        
-        # Update session state
-        st.session_state.detailed_progress_tracker = self._get_state()
+        try:
+            # Only render if we're in the main thread (Streamlit requirement)
+            # Check if we have a valid Streamlit context
+            try:
+                from streamlit.runtime.scriptrunner import get_script_run_ctx
+                ctx = get_script_run_ctx()
+                if ctx is None:
+                    # Not in main thread or no context, skip rendering
+                    return
+            except (ImportError, AttributeError, RuntimeError):
+                # Can't determine context, skip rendering to be safe
+                return
+            
+            # Ensure containers exist and are valid
+            if "overview" not in self.ui_containers or "details" not in self.ui_containers:
+                return
+            
+            self.render_overview()
+            self.render_details()
+            
+            # Update session state
+            st.session_state.detailed_progress_tracker = self._get_state()
+        except (RuntimeError, AttributeError) as e:
+            # Silently ignore rendering errors in background threads or invalid contexts
+            # This prevents "setIn cannot be called on an ElementNode" errors
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Render skipped (likely in background thread or invalid context): {e}")
+        except Exception as e:
+            # Log other unexpected errors but don't crash
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Unexpected error during render: {e}", exc_info=True)
     
     def force_render(self) -> None:
         """Force immediate render, bypassing throttle."""
@@ -574,4 +614,5 @@ class DetailedProgressTracker:
     def reset(self) -> None:
         """Reset the tracker."""
         self.__init__(self.total_files, self.operation_name, self.processing_mode)
+
 

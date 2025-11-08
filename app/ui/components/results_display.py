@@ -76,10 +76,25 @@ class ResultsDisplay:
                     # Show failed pages if any
                     failed_pages = result.get("failed_pages", [])
                     if failed_pages:
-                        st.warning(
-                            f"  ⚠️ {len(failed_pages)} 页生成讲解失败: "
-                            f"{', '.join(map(str, failed_pages))}"
-                        )
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.warning(
+                                f"  ⚠️ {len(failed_pages)} 页生成讲解失败: "
+                                f"{', '.join(map(str, failed_pages))}"
+                            )
+                        with col2:
+                            if st.button(
+                                "重试失败页面",
+                                key=f"retry_pages_{filename}",
+                                use_container_width=True
+                            ):
+                                # Store retry request in session state
+                                st.session_state[f"retry_pages_{filename}"] = {
+                                    "filename": filename,
+                                    "failed_pages": failed_pages,
+                                    "existing_explanations": result.get("explanations", {}),
+                                }
+                                st.rerun()
 
                     # Show file info
                     pdf_bytes = result.get("pdf_bytes")

@@ -6,10 +6,14 @@ and improve maintainability of the main Streamlit app.
 """
 
 from typing import Dict, List, Optional, Tuple, Any, Callable
+import logging
 import streamlit as st
 
 from app.services import pdf_processor
 from app.services import constants
+
+# Logger for background thread operations
+logger = logging.getLogger(__name__)
 
 
 class StateManager:
@@ -159,7 +163,7 @@ def process_single_file_pdf(
                 "json_bytes": None
             }
         except Exception as e:
-            st.warning(f"缓存重新合成失败，尝试重新处理: {str(e)}")
+            logger.warning(f"缓存重新合成失败，尝试重新处理: {str(e)}")
             # Fall through to reprocessing
     
     # Process from scratch with progress callbacks
@@ -182,6 +186,8 @@ def process_single_file_pdf(
             llm_provider=params.get("llm_provider", "gemini"),
             api_base=params.get("api_base"),
             on_page_status=on_page_status,
+            auto_retry_failed_pages=params.get("auto_retry_failed_pages", True),
+            max_auto_retries=params.get("max_auto_retries", 2),
         )
         
         result_bytes = pdf_processor.compose_pdf(
@@ -247,7 +253,7 @@ def process_single_file_markdown(
     
     # Try to use cached result
     if cached_result and cached_result.get("status") == "completed":
-        st.info(f"📋 {filename} 使用缓存结果")
+        logger.info(f"📋 {filename} 使用缓存结果")
         try:
             markdown_content, explanations, failed_pages, _ = pdf_processor.process_markdown_mode(
                 src_bytes=src_bytes,
@@ -276,11 +282,12 @@ def process_single_file_markdown(
                 "failed_pages": failed_pages
             }
         except Exception as e:
-            st.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
+            logger.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
             # Fall through to reprocessing
     
     # Process from scratch
-    with st.spinner(f"处理 {filename} 中..."):
+    logger.info(f"处理 {filename} 中...")
+    try:
         # Generate explanations with progress callbacks
         explanations, preview_images, failed_pages = pdf_processor.generate_explanations(
             src_bytes=src_bytes,
@@ -300,6 +307,8 @@ def process_single_file_markdown(
             llm_provider=params.get("llm_provider", "gemini"),
             api_base=params.get("api_base"),
             on_page_status=on_page_status,
+            auto_retry_failed_pages=params.get("auto_retry_failed_pages", True),
+            max_auto_retries=params.get("max_auto_retries", 2),
         )
         
         # Generate markdown
@@ -322,6 +331,15 @@ def process_single_file_markdown(
         save_result_to_file(file_hash, result)
         
         return result
+    except Exception as e:
+        logger.error(f"处理 {filename} 时发生异常: {str(e)}", exc_info=True)
+        return {
+            "status": "failed",
+            "markdown_content": None,
+            "explanations": {},
+            "failed_pages": [],
+            "error": str(e)
+        }
 
 
 def process_single_file_html_screenshot(
@@ -354,7 +372,7 @@ def process_single_file_html_screenshot(
     
     # Try to use cached result
     if cached_result and cached_result.get("status") == "completed":
-        st.info(f"📋 {filename} 使用缓存结果")
+        logger.info(f"📋 {filename} 使用缓存结果")
         try:
             # Generate HTML from cached explanations
             base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
@@ -379,11 +397,12 @@ def process_single_file_html_screenshot(
                 "failed_pages": cached_result["failed_pages"]
             }
         except Exception as e:
-            st.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
+            logger.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
             # Fall through to reprocessing
     
     # Process from scratch
-    with st.spinner(f"处理 {filename} 中..."):
+    logger.info(f"处理 {filename} 中...")
+    try:
         # First get explanations (reuse markdown processing for explanation generation)
         explanations, preview_images, failed_pages = pdf_processor.generate_explanations(
             src_bytes=src_bytes,
@@ -403,6 +422,8 @@ def process_single_file_html_screenshot(
             llm_provider=params.get("llm_provider", "gemini"),
             api_base=params.get("api_base"),
             on_page_status=on_page_status,
+            auto_retry_failed_pages=params.get("auto_retry_failed_pages", True),
+            max_auto_retries=params.get("max_auto_retries", 2),
         )
         
         if explanations:
@@ -447,6 +468,15 @@ def process_single_file_html_screenshot(
                 "failed_pages": [],
                 "error": "生成讲解失败"
             }
+    except Exception as e:
+        logger.error(f"处理 {filename} 时发生异常: {str(e)}", exc_info=True)
+        return {
+            "status": "failed",
+            "html_content": None,
+            "explanations": {},
+            "failed_pages": [],
+            "error": str(e)
+        }
 
 
 def process_single_file_html_pdf2htmlex(
@@ -479,7 +509,7 @@ def process_single_file_html_pdf2htmlex(
     
     # Try to use cached result
     if cached_result and cached_result.get("status") == "completed":
-        st.info(f"📋 {filename} 使用缓存结果")
+        logger.info(f"📋 {filename} 使用缓存结果")
         try:
             base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
             title = params.get("markdown_title", "").strip() or base_name
@@ -501,39 +531,133 @@ def process_single_file_html_pdf2htmlex(
                 "failed_pages": cached_result["failed_pages"]
             }
         except Exception as e:
-            st.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
+            logger.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
             # Fall through to reprocessing
     
-    # Process from scratch
-    with st.spinner(f"处理 {filename} 中..."):
-        # First get explanations
-        explanations, preview_images, failed_pages = pdf_processor.generate_explanations(
-            src_bytes=src_bytes,
-            api_key=params["api_key"],
-            model_name=params["model_name"],
-            user_prompt=params["user_prompt"],
-            temperature=params["temperature"],
-            max_tokens=params["max_tokens"],
-            dpi=params["dpi"],
-            concurrency=params["concurrency"],
-            rpm_limit=params["rpm_limit"],
-            tpm_budget=params["tpm_budget"],
-            rpd_limit=params["rpd_limit"],
-            on_progress=on_progress,
-            use_context=params.get("use_context", False),
-            context_prompt=params.get("context_prompt", None),
-            llm_provider=params.get("llm_provider", "gemini"),
-            api_base=params.get("api_base"),
-            on_page_status=on_page_status,
-        )
+    # Process from scratch - parallel execution of explanation generation and pdf2htmlEX conversion
+    logger.info(f"处理 {filename} 中...")
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        if explanations:
+        # Create wrapper functions for parallel execution
+        def generate_explanations_task():
+            """Generate explanations in a separate thread."""
+            return pdf_processor.generate_explanations(
+                src_bytes=src_bytes,
+                api_key=params["api_key"],
+                model_name=params["model_name"],
+                user_prompt=params["user_prompt"],
+                temperature=params["temperature"],
+                max_tokens=params["max_tokens"],
+                dpi=params["dpi"],
+                concurrency=params["concurrency"],
+                rpm_limit=params["rpm_limit"],
+                tpm_budget=params["tpm_budget"],
+                rpd_limit=params["rpd_limit"],
+                auto_retry_failed_pages=params.get("auto_retry_failed_pages", True),
+                max_auto_retries=params.get("max_auto_retries", 2),
+                on_progress=on_progress,
+                use_context=params.get("use_context", False),
+                context_prompt=params.get("context_prompt", None),
+                llm_provider=params.get("llm_provider", "gemini"),
+                api_base=params.get("api_base"),
+                on_page_status=on_page_status,
+            )
+        
+        def convert_pdf_to_html_task():
+            """Convert PDF to HTML using pdf2htmlEX in a separate thread."""
+            return pdf_processor._convert_pdf_to_html_pdf2htmlex(src_bytes)
+        
+        # Execute both tasks in parallel
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_explanations = executor.submit(generate_explanations_task)
+            future_pdf2html = executor.submit(convert_pdf_to_html_task)
+            
+            # Wait for both tasks to complete
+            explanations_result = None
+            pdf2html_result = None
+            explanations_error = None
+            pdf2html_error = None
+            
+            # Collect results as they complete
+            for future in as_completed([future_explanations, future_pdf2html]):
+                try:
+                    result = future.result()
+                    # Determine which task completed based on which future it is
+                    if future == future_explanations:
+                        # This is explanations result: (explanations, preview_images, failed_pages)
+                        explanations_result = result
+                    elif future == future_pdf2html:
+                        # This is pdf2htmlEX result: (css_content, page_htmls, error)
+                        pdf2html_result = result
+                except Exception as e:
+                    # Determine which task failed
+                    if future == future_explanations:
+                        explanations_error = str(e)
+                    elif future == future_pdf2html:
+                        pdf2html_error = str(e)
+            
+            # Check for errors
+            if explanations_error:
+                return {
+                    "status": "failed",
+                    "html_content": None,
+                    "explanations": {},
+                    "failed_pages": [],
+                    "error": f"生成讲解失败: {explanations_error}"
+                }
+            
+            if pdf2html_error or not pdf2html_result:
+                return {
+                    "status": "failed",
+                    "html_content": None,
+                    "explanations": {},
+                    "failed_pages": [],
+                    "error": f"PDF转HTML失败: {pdf2html_error or '未知错误'}"
+                }
+            
+            # Unpack results
+            explanations, preview_images, failed_pages = explanations_result
+            css_content, page_htmls, pdf2html_error = pdf2html_result
+            
+            if pdf2html_error or not page_htmls:
+                return {
+                    "status": "failed",
+                    "html_content": None,
+                    "explanations": {},
+                    "failed_pages": [],
+                    "error": f"PDF转HTML失败: {pdf2html_error or '解析失败'}"
+                }
+            
+            if not explanations:
+                return {
+                    "status": "failed",
+                    "html_content": None,
+                    "explanations": {},
+                    "failed_pages": [],
+                    "error": "生成讲解失败"
+                }
+            
+            # Generate final HTML document
             try:
                 base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
                 title = params.get("markdown_title", "").strip() or base_name
-                html_content = pdf_processor.generate_html_pdf2htmlex_document(
-                    src_bytes=src_bytes,
-                    explanations=explanations,
+                
+                # Convert explanations from 0-indexed to 1-indexed
+                explanations_1indexed = {
+                    page_num + 1: text 
+                    for page_num, text in explanations.items()
+                }
+                
+                total_pages = len(page_htmls)
+                
+                # Generate HTML document
+                from app.services.html_pdf2htmlex_generator import HTMLPdf2htmlEXGenerator
+                html_content = HTMLPdf2htmlEXGenerator.generate_html_pdf2htmlex_view(
+                    page_htmls=page_htmls,
+                    pdf2htmlex_css=css_content,
+                    explanations=explanations_1indexed,
+                    total_pages=total_pages,
                     title=title,
                     font_name=params.get("cjk_font_name", "SimHei"),
                     font_size=params.get("font_size", 14),
@@ -542,6 +666,7 @@ def process_single_file_html_pdf2htmlex(
                     column_gap=params.get("html_column_gap", 20),
                     show_column_rule=params.get("html_show_column_rule", True)
                 )
+                
                 result = {
                     "status": "completed",
                     "html_content": html_content,
@@ -558,14 +683,15 @@ def process_single_file_html_pdf2htmlex(
                     "failed_pages": [],
                     "error": f"HTML生成失败: {str(e)}"
                 }
-        else:
-            return {
-                "status": "failed",
-                "html_content": None,
-                "explanations": {},
-                "failed_pages": [],
-                "error": "生成讲解失败"
-            }
+    except Exception as e:
+        logger.error(f"处理 {filename} 时发生异常: {str(e)}", exc_info=True)
+        return {
+            "status": "failed",
+            "html_content": None,
+            "explanations": {},
+            "failed_pages": [],
+            "error": str(e)
+        }
 
 
 def process_single_file(
@@ -772,6 +898,78 @@ def build_zip_cache_markdown(batch_results: Dict[str, Dict[str, Any]]) -> Option
                     zip_file.writestr(
                         f"{base_name}讲解文档.md",
                         result["markdown_content"].encode("utf-8")
+                    )
+                
+                # Add JSON
+                if result.get("explanations"):
+                    json_bytes = json.dumps(
+                        result["explanations"],
+                        ensure_ascii=False,
+                        indent=2
+                    ).encode("utf-8")
+                    zip_file.writestr(
+                        f"{base_name}.json",
+                        json_bytes
+                    )
+    
+    zip_buffer.seek(0)
+    return zip_buffer.read() if zip_buffer.getvalue() else None
+
+
+def build_zip_cache_html_screenshot(batch_results: Dict[str, Dict[str, Any]]) -> Optional[bytes]:
+    """Build ZIP file containing HTML screenshot files and JSONs from batch results."""
+    import zipfile
+    import io
+    import json
+    
+    zip_buffer = io.BytesIO()
+    
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for filename, result in batch_results.items():
+            if result.get("status") == "completed":
+                base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                
+                # Add HTML
+                if result.get("html_content"):
+                    zip_file.writestr(
+                        f"{base_name}讲解文档.html",
+                        result["html_content"].encode("utf-8")
+                    )
+                
+                # Add JSON
+                if result.get("explanations"):
+                    json_bytes = json.dumps(
+                        result["explanations"],
+                        ensure_ascii=False,
+                        indent=2
+                    ).encode("utf-8")
+                    zip_file.writestr(
+                        f"{base_name}.json",
+                        json_bytes
+                    )
+    
+    zip_buffer.seek(0)
+    return zip_buffer.read() if zip_buffer.getvalue() else None
+
+
+def build_zip_cache_html_pdf2htmlex(batch_results: Dict[str, Dict[str, Any]]) -> Optional[bytes]:
+    """Build ZIP file containing HTML pdf2htmlEX files and JSONs from batch results."""
+    import zipfile
+    import io
+    import json
+    
+    zip_buffer = io.BytesIO()
+    
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for filename, result in batch_results.items():
+            if result.get("status") == "completed":
+                base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                
+                # Add HTML
+                if result.get("html_content"):
+                    zip_file.writestr(
+                        f"{base_name}讲解文档.html",
+                        result["html_content"].encode("utf-8")
                     )
                 
                 # Add JSON

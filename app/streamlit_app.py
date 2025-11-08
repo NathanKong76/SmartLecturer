@@ -6,7 +6,7 @@ import zipfile
 import hashlib
 import tempfile
 from typing import Optional, Dict, Any, List
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -235,6 +235,25 @@ def sidebar_form():
 					step=100,
 					help="每天请求数限制"
 				)
+			
+			# Auto-retry configuration
+			st.divider()
+			auto_retry_failed_pages = st.checkbox(
+				"自动重试失败页面",
+				value=True,
+				help="处理完成后自动重试失败的页面，提高成功率"
+			)
+			if auto_retry_failed_pages:
+				max_auto_retries = st.number_input(
+					"最大自动重试次数",
+					min_value=0,
+					max_value=5,
+					value=2,
+					step=1,
+					help="每个失败页面最多自动重试的次数"
+				)
+			else:
+				max_auto_retries = 0
 		
 		# ============================================
 		# 5. 高级排版配置 - 默认折叠
@@ -362,6 +381,8 @@ def sidebar_form():
 		"html_column_count": html_column_count,
 		"html_column_gap": html_column_gap,
 		"html_show_column_rule": html_show_column_rule,
+		"auto_retry_failed_pages": bool(auto_retry_failed_pages),
+		"max_auto_retries": int(max_auto_retries),
 	}
 
 
@@ -439,48 +460,47 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 	# Render initial progress
 	progress_tracker.force_render()  # Force initial render
 	
-	# Process each file
-	for i, uploaded_file in enumerate(uploaded_files):
+	# Calculate file-level concurrency (simple: max 20, don't exceed file count)
+	file_count = len(uploaded_files)
+	max_file_concurrency = min(20, file_count)
+	
+	# Decide whether to use concurrent processing
+	use_concurrent = file_count > 1 and max_file_concurrency > 1
+	
+	# Display concurrency information
+	if use_concurrent:
+		page_concurrency = params.get("concurrency", 50)
+		theoretical_max = page_concurrency * file_count
+		st.info(
+			f"并发设置: {max_file_concurrency} 个文件并发处理 "
+			f"(页面并发: {page_concurrency}, 理论最大并发: {theoretical_max})"
+		)
+	
+	# Define function to process a single file
+	def process_single_file_task(uploaded_file, on_progress=None, on_page_status=None):
+		"""Process a single file and return result."""
 		filename = uploaded_file.name
-		StateManager.get_batch_results()[filename] = {
-			"status": "processing",
-			"pdf_bytes": None,
-			"explanations": {},
-			"failed_pages": [],
-			"json_bytes": None
-		}
-		
-		# Start file processing
-		progress_tracker.start_file(filename)
-		progress_tracker.update_file_stage(filename, 0)  # Stage 0: Rendering
-		progress_tracker.force_render()  # Force render for stage change
-		
-		# Read file bytes and get cache hash
-		uploaded_file.seek(0)  # Reset file pointer in case it was read before
-		src_bytes = uploaded_file.read()
-		file_hash = get_file_hash(src_bytes, params)
-		cached_result = load_result_from_file(file_hash)
-		
-		# Create progress callbacks for this file
-		def create_progress_callbacks(fname: str):
-			def on_progress(done: int, total: int):
-				progress_tracker.update_file_page_progress(fname, done, total)
-				progress_tracker.update_file_stage(fname, 1)  # Stage 1: Generating
-				# Use throttled render for frequent updates
-				progress_tracker.render()
-			
-			def on_page_status(page_index: int, status: str, error: Optional[str]):
-				progress_tracker.update_page_status(fname, page_index, status, error)
-				# Use throttled render for frequent updates
-				progress_tracker.render()
-			
-			return on_progress, on_page_status
-		
-		on_progress, on_page_status = create_progress_callbacks(filename)
-		
-		# Process file with progress callbacks
 		try:
-			# Process file (modify to accept progress callbacks)
+			# Initialize result state
+			StateManager.get_batch_results()[filename] = {
+				"status": "processing",
+				"pdf_bytes": None,
+				"explanations": {},
+				"failed_pages": [],
+				"json_bytes": None
+			}
+			
+			# Start file processing
+			progress_tracker.start_file(filename)
+			progress_tracker.update_file_stage(filename, 0)  # Stage 0: Rendering
+			
+			# Read file bytes and get cache hash
+			uploaded_file.seek(0)  # Reset file pointer
+			src_bytes = uploaded_file.read()
+			file_hash = get_file_hash(src_bytes, params)
+			cached_result = load_result_from_file(file_hash)
+			
+			# Process file with progress callbacks
 			result = process_single_file_with_progress(
 				src_bytes, filename, params, file_hash, cached_result,
 				on_progress=on_progress, on_page_status=on_page_status
@@ -488,8 +508,8 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			
 			# Update stage to composing
 			progress_tracker.update_file_stage(filename, 2)  # Stage 2: Composing
-			progress_tracker.force_render()  # Force render for stage change
 			
+			# Update result
 			StateManager.get_batch_results()[filename] = result
 			
 			# Mark file as completed or failed
@@ -497,10 +517,8 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 				progress_tracker.complete_file(filename, success=True)
 			else:
 				progress_tracker.complete_file(filename, success=False, error=result.get("error"))
-			progress_tracker.force_render()  # Force render for completion
 			
-			# Display result
-			display_file_result(filename, result)
+			return filename, result
 			
 		except Exception as e:
 			progress_tracker.complete_file(filename, success=False, error=str(e))
@@ -508,18 +526,148 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 				"status": "failed",
 				"error": str(e)
 			}
-			progress_tracker.force_render()  # Force render for error
+			return filename, {
+				"status": "failed",
+				"error": str(e)
+			}
+	
+	# Process files (concurrent or sequential)
+	if use_concurrent:
+		# Concurrent processing - create thread-safe callbacks for each file
+		file_callbacks = {}
+		for uploaded_file in uploaded_files:
+			on_progress, on_page_status = progress_tracker.create_thread_safe_callbacks(uploaded_file.name)
+			file_callbacks[uploaded_file.name] = (on_progress, on_page_status)
+		
+		with ThreadPoolExecutor(max_workers=max_file_concurrency) as executor:
+			# Submit all tasks and mark files as processing
+			future_to_file = {}
+			for uploaded_file in uploaded_files:
+				filename = uploaded_file.name
+				# Mark file as processing immediately after submission
+				progress_tracker.start_file(filename)
+				progress_tracker.update_file_stage(filename, 0)  # Stage 0: Rendering
+				
+				on_progress, on_page_status = file_callbacks[filename]
+				future = executor.submit(
+					process_single_file_task,
+					uploaded_file,
+					on_progress,
+					on_page_status
+				)
+				future_to_file[future] = filename
+			
+			# Immediately render after submitting all tasks
+			progress_tracker.force_render()
+			
+			# Collect results as they complete with periodic UI updates
+			completed_count = 0
+			last_render_time = time.time()
+			render_interval = 0.3  # Update UI every 0.3 seconds
+			pending_futures = set(future_to_file.keys())
+			
+			while pending_futures:
+				# Use wait with timeout to allow periodic UI updates
+				done, not_done = wait(pending_futures, timeout=0.5, return_when=FIRST_COMPLETED)
+				
+				# Process completed futures
+				for future in done:
+					filename = future_to_file[future]
+					completed_count += 1
+					pending_futures.remove(future)
+					
+					try:
+						result_filename, result = future.result()
+						
+						# Ensure result is saved to batch_results (may have been saved in task, but ensure it's there)
+						StateManager.get_batch_results()[result_filename] = result
+						
+						# Display result
+						display_file_result(result_filename, result)
+						
+					except Exception as e:
+						# Handle exception from future
+						StateManager.get_batch_results()[filename] = {
+							"status": "failed",
+							"error": str(e)
+						}
+						progress_tracker.complete_file(filename, success=False, error=str(e))
+				
+				# Periodic UI update even if no tasks completed
+				current_time = time.time()
+				if current_time - last_render_time >= render_interval:
+					progress_tracker.force_render()
+					last_render_time = current_time
+			
+			# Final render
+			progress_tracker.force_render()
+	else:
+		# Sequential processing (single file or low concurrency)
+		for i, uploaded_file in enumerate(uploaded_files):
+			filename = uploaded_file.name
+			
+			# Create progress callbacks for this file
+			def create_progress_callbacks(fname: str):
+				def on_progress(done: int, total: int):
+					progress_tracker.update_file_page_progress(fname, done, total)
+					progress_tracker.update_file_stage(fname, 1)  # Stage 1: Generating
+					progress_tracker.render()
+				
+				def on_page_status(page_index: int, status: str, error: Optional[str]):
+					progress_tracker.update_page_status(fname, page_index, status, error)
+					progress_tracker.render()
+				
+				return on_progress, on_page_status
+			
+			on_progress, on_page_status = create_progress_callbacks(filename)
+			
+			# Process file
+			result_filename, result = process_single_file_task(
+				uploaded_file,
+				on_progress=on_progress,
+				on_page_status=on_page_status
+			)
+			
+			# Display result
+			display_file_result(result_filename, result)
+			
+			# Force render for each file completion
+			progress_tracker.force_render()
 	
 	# Complete processing - final render
 	progress_tracker.force_render()  # Force final render
 	
-	# Statistics
+	# Statistics - ensure we have all results
 	batch_results = StateManager.get_batch_results()
-	completed = sum(1 for r in batch_results.values() if r.get("status") == "completed")
-	failed = sum(1 for r in batch_results.values() if r.get("status") == "failed")
 	
+	# Count by status, handling all possible status values
+	completed = 0
+	failed = 0
+	processing = 0
+	other = 0
+	
+	for filename, result in batch_results.items():
+		status = result.get("status", "unknown")
+		if status == "completed":
+			completed += 1
+		elif status == "failed":
+			failed += 1
+		elif status == "processing":
+			processing += 1
+		else:
+			other += 1
+	
+	# If there are still processing files, wait a bit or show warning
+	if processing > 0:
+		st.warning(f"⚠️ 还有 {processing} 个文件正在处理中...")
+	
+	# Show final statistics
 	if completed > 0:
 		st.success(f"🎉 批量处理完成！成功: {completed} 个文件，失败: {failed} 个文件")
+	elif failed > 0 and completed == 0:
+		st.error(f"❌ 所有文件处理失败（共 {failed} 个文件）")
+	elif other > 0:
+		st.warning(f"⚠️ 处理状态异常：{other} 个文件状态未知")
 	else:
 		st.error("❌ 所有文件处理失败")
 	
@@ -598,8 +746,20 @@ def main():
 				for filename, result in batch_results.items():
 					if result["status"] == "completed":
 						st.success(f"✅ {filename} - 处理成功")
-						if result["failed_pages"]:
-							st.warning(f"  ⚠️ {len(result['failed_pages'])} 页生成讲解失败")
+						failed_pages = result.get("failed_pages", [])
+						if failed_pages:
+							col1, col2 = st.columns([3, 1])
+							with col1:
+								st.warning(f"  ⚠️ {len(failed_pages)} 页生成讲解失败: {', '.join(map(str, failed_pages))}")
+							with col2:
+								if st.button(f"重试失败页面", key=f"retry_pages_{filename}", use_container_width=True):
+									# Store retry request in session state
+									st.session_state[f"retry_pages_{filename}"] = {
+										"filename": filename,
+										"failed_pages": failed_pages,
+										"existing_explanations": result.get("explanations", {}),
+									}
+									st.rerun()
 					else:
 						st.error(f"❌ {filename} - 处理失败: {result.get('error', '未知错误')}")
 
@@ -662,6 +822,8 @@ def main():
 									context_prompt=params.get("context_prompt", None),
 									llm_provider=params.get("llm_provider", "gemini"),
 									api_base=params.get("api_base"),
+									auto_retry_failed_pages=params.get("auto_retry_failed_pages", True),
+									max_auto_retries=params.get("max_auto_retries", 2),
 									)
 
 									result_bytes = pdf_processor.compose_pdf(
@@ -702,6 +864,99 @@ def main():
 
 					else:
 						st.error("无法找到需要重试的文件")
+			
+			# 重试失败页面
+			for key in list(st.session_state.keys()):
+				if key.startswith("retry_pages_") and key in st.session_state:
+					retry_info = st.session_state[key]
+					retry_filename = retry_info["filename"]
+					retry_failed_pages = retry_info["failed_pages"]
+					existing_explanations = retry_info["existing_explanations"]
+					
+					# Find the uploaded file
+					retry_file = None
+					for uploaded_file in uploaded_files:
+						if uploaded_file.name == retry_filename:
+							retry_file = uploaded_file
+							break
+					
+					if retry_file and retry_filename in batch_results:
+						st.subheader(f"🔄 重试 {retry_filename} 的失败页面")
+						st.info(f"正在重试 {len(retry_failed_pages)} 个失败页面: {', '.join(map(str, retry_failed_pages))}")
+						
+						try:
+							src_bytes = retry_file.read()
+							
+							file_progress = st.progress(0)
+							file_status = st.empty()
+							
+							def on_file_progress(done: int, total: int):
+								pct = int(done * 100 / max(1, total))
+								file_progress.progress(pct)
+								file_status.write(f"{retry_filename}: 正在重试失败页面 {done}/{total}")
+							
+							def on_file_log(msg: str):
+								file_status.write(f"{retry_filename}: {msg}")
+							
+							with st.spinner(f"重试 {retry_filename} 的失败页面中..."):
+								# Use retry_failed_pages function
+								merged_explanations, preview_images, remaining_failed_pages = pdf_processor.retry_failed_pages(
+									src_bytes=src_bytes,
+									existing_explanations=existing_explanations,
+									failed_page_numbers=retry_failed_pages,
+									api_key=params["api_key"],
+									model_name=params["model_name"],
+									user_prompt=params["user_prompt"],
+									temperature=params["temperature"],
+									max_tokens=params["max_tokens"],
+									dpi=params["dpi"],
+									concurrency=params["concurrency"],
+									rpm_limit=params["rpm_limit"],
+									tpm_budget=params["tpm_budget"],
+									rpd_limit=params["rpd_limit"],
+									on_progress=on_file_progress,
+									on_log=on_file_log,
+									use_context=params.get("use_context", False),
+									context_prompt=params.get("context_prompt", None),
+									llm_provider=params.get("llm_provider", "gemini"),
+									api_base=params.get("api_base"),
+								)
+								
+								# Re-compose PDF with merged explanations
+								result_bytes = pdf_processor.compose_pdf(
+									src_bytes,
+									merged_explanations,
+									params["right_ratio"],
+									params["font_size"],
+									font_name=(params.get("cjk_font_name") or "SimHei"),
+									render_mode=params.get("render_mode", "markdown"),
+									line_spacing=params["line_spacing"],
+									column_padding=params.get("column_padding", 10)
+								)
+							
+							# Update batch results
+							st.session_state["batch_results"][retry_filename] = {
+								"status": "completed",
+								"pdf_bytes": result_bytes,
+								"explanations": merged_explanations,
+								"failed_pages": remaining_failed_pages
+							}
+							
+							st.success(f"✅ {retry_filename} 失败页面重试成功！")
+							if remaining_failed_pages:
+								st.warning(f"⚠️ {retry_filename} 中仍有 {len(remaining_failed_pages)} 页生成讲解失败: {', '.join(map(str, remaining_failed_pages))}")
+							else:
+								st.success(f"🎉 {retry_filename} 所有页面都已成功生成讲解！")
+							
+							file_progress.empty()
+							file_status.empty()
+							
+						except Exception as e:
+							st.error(f"❌ {retry_filename} 失败页面重试失败: {str(e)}")
+						
+						# Clear retry request
+						del st.session_state[key]
+						st.rerun()
 
 		# 下载功能
 		if batch_results and any(r["status"] == "completed" for r in batch_results.values()):

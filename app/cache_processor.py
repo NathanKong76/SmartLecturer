@@ -115,6 +115,8 @@ def cached_process_pdf(src_bytes: bytes, params: dict) -> dict:
 				context_prompt=params.get("context_prompt", None),
 				llm_provider=params.get("llm_provider", "gemini"),
 				api_base=params.get("api_base"),
+				auto_retry_failed_pages=params.get("auto_retry_failed_pages", True),
+				max_auto_retries=params.get("max_auto_retries", 2),
 		)
 		
 		result_bytes = pdf_processor.compose_pdf(

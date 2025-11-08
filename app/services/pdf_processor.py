@@ -114,10 +114,20 @@ async def _generate_explanations_async(
 	on_log: Optional[Callable[[str], None]],
 	global_concurrency_controller=None,
 	on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
+	target_pages: Optional[List[int]] = None,
 ) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
 	total_pages = len(page_images)
 	if total_pages == 0:
 		return {}, {}, []
+
+	# Filter pages to process if target_pages is specified
+	# target_pages contains 0-based indices
+	pages_to_process = list(range(total_pages))
+	if target_pages is not None:
+		# Filter to only process specified pages (0-based)
+		pages_to_process = [idx for idx in target_pages if 0 <= idx < total_pages]
+		if not pages_to_process:
+			return {}, {}, []
 
 	# Use local semaphore for page-level concurrency
 	local_semaphore = asyncio.Semaphore(max(1, concurrency))
@@ -223,7 +233,7 @@ async def _generate_explanations_async(
 
 			return page_index, result.strip(), error
 
-	tasks = [asyncio.create_task(process_page(idx)) for idx in range(total_pages)]
+	tasks = [asyncio.create_task(process_page(idx)) for idx in pages_to_process]
 	results = await asyncio.gather(*tasks, return_exceptions=False)
 	explanations: Dict[int, str] = {}
 	failed_pages: List[int] = []
@@ -255,6 +265,9 @@ def generate_explanations(
 	llm_provider: str = "gemini",
 	api_base: Optional[str] = None,
 	on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
+	target_pages: Optional[List[int]] = None,
+	auto_retry_failed_pages: bool = True,
+	max_auto_retries: int = 2,
 ) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
 	if not api_key:
 		raise ValueError("api_key is required to generate explanations")
@@ -298,7 +311,14 @@ def generate_explanations(
 	from .concurrency_controller import GlobalConcurrencyController
 	global_controller = GlobalConcurrencyController.get_instance_sync()
 	
-	return _run_async(
+	# Convert target_pages from 1-based to 0-based if provided
+	target_pages_0based = None
+	if target_pages is not None:
+		# Assume input is 1-based, convert to 0-based
+		target_pages_0based = [p - 1 for p in target_pages if p > 0]
+	
+	# Initial processing
+	explanations, preview_images, failed_pages = _run_async(
 		_generate_explanations_async(
 			llm_client=llm_client,
 			page_images=[img if img else b"" for img in page_images],
@@ -310,8 +330,152 @@ def generate_explanations(
 			on_log=on_log,
 			global_concurrency_controller=global_controller,
 			on_page_status=on_page_status,
+			target_pages=target_pages_0based,
 		)
 	)
+	
+	# Auto-retry failed pages if enabled
+	if auto_retry_failed_pages and failed_pages and max_auto_retries > 0:
+		if on_log:
+			try:
+				on_log(f"开始自动重试 {len(failed_pages)} 个失败页面（最多重试 {max_auto_retries} 次）")
+			except Exception:
+				pass
+		
+		for retry_attempt in range(max_auto_retries):
+			if not failed_pages:
+				break
+			
+			if on_log:
+				try:
+					on_log(f"自动重试第 {retry_attempt + 1} 次，剩余失败页面: {', '.join(map(str, failed_pages))}")
+				except Exception:
+					pass
+			
+			# Retry failed pages (convert 1-based to 0-based)
+			failed_pages_0based = [p - 1 for p in failed_pages]
+			new_explanations, _, new_failed_pages = _run_async(
+				_generate_explanations_async(
+					llm_client=llm_client,
+					page_images=[img if img else b"" for img in page_images],
+					user_prompt=user_prompt,
+					context_prompt=context_prompt,
+					use_context=use_context,
+					concurrency=max(1, concurrency),
+					on_progress=on_progress,
+					on_log=on_log,
+					global_concurrency_controller=global_controller,
+					on_page_status=on_page_status,
+					target_pages=failed_pages_0based,
+				)
+			)
+			
+			# Merge new explanations with existing ones
+			explanations.update(new_explanations)
+			
+			# Update failed pages list (only keep pages that still failed)
+			failed_pages = new_failed_pages
+			
+			if on_log:
+				try:
+					if failed_pages:
+						on_log(f"自动重试第 {retry_attempt + 1} 次完成，仍有 {len(failed_pages)} 页失败")
+					else:
+						on_log(f"自动重试第 {retry_attempt + 1} 次完成，所有页面已成功")
+				except Exception:
+					pass
+		
+		if on_log and failed_pages:
+			try:
+				on_log(f"自动重试完成，仍有 {len(failed_pages)} 页失败: {', '.join(map(str, failed_pages))}")
+			except Exception:
+				pass
+	
+	return explanations, preview_images, failed_pages
+
+
+def retry_failed_pages(
+	src_bytes: bytes,
+	existing_explanations: Dict[int, str],
+	failed_page_numbers: List[int],  # 1-based page numbers
+	api_key: str,
+	model_name: str,
+	user_prompt: str,
+	temperature: float,
+	max_tokens: int,
+	dpi: int,
+	concurrency: int,
+	rpm_limit: int,
+	tpm_budget: int,
+	rpd_limit: int,
+	on_progress: Optional[Callable[[int, int], None]] = None,
+	on_log: Optional[Callable[[str], None]] = None,
+	use_context: bool = False,
+	context_prompt: Optional[str] = None,
+	llm_provider: str = "gemini",
+	api_base: Optional[str] = None,
+	on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
+) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
+	"""
+	Retry generating explanations for failed pages only.
+	
+	Args:
+		src_bytes: Source PDF bytes
+		existing_explanations: Existing explanations dict (0-indexed page -> explanation)
+		failed_page_numbers: List of failed page numbers (1-based)
+		... (other parameters same as generate_explanations)
+		
+	Returns:
+		Tuple of (merged_explanations, preview_images, remaining_failed_pages)
+		- merged_explanations: Combined dict with existing and new explanations (0-indexed)
+		- preview_images: Preview images dict (1-indexed page -> base64 string)
+		- remaining_failed_pages: List of page numbers that still failed (1-based)
+	"""
+	if not failed_page_numbers:
+		# No failed pages to retry, return existing data
+		# Generate preview images for all pages
+		pdf_doc = fitz.open(stream=src_bytes, filetype="pdf")
+		try:
+			preview_images: Dict[int, str] = {}
+			for page_index in range(pdf_doc.page_count):
+				try:
+					img_bytes = _page_png_bytes(pdf_doc, page_index, dpi)
+					preview_images[page_index + 1] = base64.b64encode(img_bytes).decode("utf-8")
+				except Exception:
+					pass
+		finally:
+			pdf_doc.close()
+		return existing_explanations, preview_images, []
+	
+	# Generate explanations only for failed pages
+	new_explanations, preview_images, new_failed_pages = generate_explanations(
+		src_bytes=src_bytes,
+		api_key=api_key,
+		model_name=model_name,
+		user_prompt=user_prompt,
+		temperature=temperature,
+		max_tokens=max_tokens,
+		dpi=dpi,
+		concurrency=concurrency,
+		rpm_limit=rpm_limit,
+		tpm_budget=tpm_budget,
+		rpd_limit=rpd_limit,
+		on_progress=on_progress,
+		on_log=on_log,
+		use_context=use_context,
+		context_prompt=context_prompt,
+		llm_provider=llm_provider,
+		api_base=api_base,
+		on_page_status=on_page_status,
+		target_pages=failed_page_numbers,
+		auto_retry_failed_pages=False,  # Don't auto-retry in manual retry
+		max_auto_retries=0,
+	)
+	
+	# Merge existing explanations with new ones
+	merged_explanations = {**existing_explanations, **new_explanations}
+	
+	return merged_explanations, preview_images, new_failed_pages
 
 
 def process_markdown_mode(
@@ -472,6 +636,54 @@ def generate_html_screenshot_document(
     
     return html_content
 
+# Helper function to convert PDF to HTML using pdf2htmlEX (can be run in parallel)
+def _convert_pdf_to_html_pdf2htmlex(
+    src_bytes: bytes
+) -> Tuple[Optional[str], Optional[List[str]], Optional[str]]:
+    """
+    Convert PDF to HTML using pdf2htmlEX (internal helper for parallel execution).
+    
+    Args:
+        src_bytes: Source PDF file bytes
+        
+    Returns:
+        (css_content, page_htmls_list, error_message)
+    """
+    import tempfile
+    import os
+    
+    # Check if pdf2htmlEX is installed
+    is_installed, message = HTMLPdf2htmlEXGenerator.check_pdf2htmlex_installed()
+    if not is_installed:
+        return None, None, f"pdf2htmlEX not available: {message}"
+    
+    # Create temporary directory for pdf2htmlEX output
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # Call pdf2htmlEX to convert PDF
+        success, html_path, error = HTMLPdf2htmlEXGenerator.call_pdf2htmlex(
+            src_bytes, temp_dir
+        )
+        
+        if not success:
+            return None, None, f"pdf2htmlEX conversion failed: {error}"
+        
+        # Parse pdf2htmlEX output
+        css_content, page_htmls, error = HTMLPdf2htmlEXGenerator.parse_pdf2htmlex_html(html_path)
+        
+        if error or not page_htmls:
+            return None, None, f"Failed to parse pdf2htmlEX output: {error}"
+        
+        return css_content, page_htmls, None
+    finally:
+        # Clean up temporary directory
+        try:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 # HTML pdf2htmlEX document generation function
 def generate_html_pdf2htmlex_document(
     src_bytes: bytes,
@@ -506,78 +718,64 @@ def generate_html_pdf2htmlex_document(
     import tempfile
     import os
     
-    # Check if pdf2htmlEX is installed
-    is_installed, message = HTMLPdf2htmlEXGenerator.check_pdf2htmlex_installed()
-    if not is_installed:
-        raise RuntimeError(f"pdf2htmlEX not available: {message}")
+    # Use helper function to get pdf2htmlEX conversion result
+    # (This can be called in parallel with explanation generation)
+    css_content, page_htmls, error = _convert_pdf_to_html_pdf2htmlex(src_bytes)
     
-    # Create temporary directory for pdf2htmlEX output
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Call pdf2htmlEX to convert PDF
-        success, html_path, error = HTMLPdf2htmlEXGenerator.call_pdf2htmlex(
-            src_bytes, temp_dir
-        )
-        
-        if not success:
-            raise RuntimeError(f"pdf2htmlEX conversion failed: {error}")
-        
-        # Parse pdf2htmlEX output
-        css_content, page_htmls, error = HTMLPdf2htmlEXGenerator.parse_pdf2htmlex_html(html_path)
-        
-        if error or not page_htmls:
-            raise RuntimeError(f"Failed to parse pdf2htmlEX output: {error}")
-        
-        total_pages = len(page_htmls)
-        
-        # 更新进度：pdf2htmlEX 转换完成，开始解析页面
-        if on_progress:
+    if error or not page_htmls:
+        raise RuntimeError(f"pdf2htmlEX conversion failed: {error}")
+    
+    total_pages = len(page_htmls)
+    
+    # 更新进度：pdf2htmlEX 转换完成，开始解析页面
+    if on_progress:
+        try:
+            on_progress(0, total_pages)  # 转换完成，开始处理页面
+        except Exception:
+            pass
+    
+    # Convert explanations from 0-indexed to 1-indexed
+    explanations_1indexed = {
+        page_num + 1: text 
+        for page_num, text in explanations.items()
+    }
+    
+    # 更新每个页面的状态（解析阶段）
+    for page_num in range(total_pages):
+        if on_page_status:
             try:
-                on_progress(0, total_pages)  # 转换完成，开始处理页面
+                on_page_status(page_num, "processing", None)
             except Exception:
                 pass
         
-        # Convert explanations from 0-indexed to 1-indexed
-        explanations_1indexed = {
-            page_num + 1: text 
-            for page_num, text in explanations.items()
-        }
+        if on_progress:
+            try:
+                on_progress(page_num + 1, total_pages)
+            except Exception:
+                pass
         
-        # 更新每个页面的状态（解析阶段）
-        for page_num in range(total_pages):
-            if on_page_status:
-                try:
-                    on_page_status(page_num, "processing", None)
-                except Exception:
-                    pass
-            
-            if on_progress:
-                try:
-                    on_progress(page_num + 1, total_pages)
-                except Exception:
-                    pass
-            
-            if on_page_status:
-                try:
-                    on_page_status(page_num, "completed", None)
-                except Exception:
-                    pass
-        
-        # Generate HTML document
-        html_content = HTMLPdf2htmlEXGenerator.generate_html_pdf2htmlex_view(
-            page_htmls=page_htmls,
-            pdf2htmlex_css=css_content,
-            explanations=explanations_1indexed,
-            total_pages=total_pages,
-            title=title,
-            font_name=font_name,
-            font_size=font_size,
-            line_spacing=line_spacing,
-            column_count=column_count,
-            column_gap=column_gap,
-            show_column_rule=show_column_rule
-        )
-        
-        return html_content
+        if on_page_status:
+            try:
+                on_page_status(page_num, "completed", None)
+            except Exception:
+                pass
+    
+    # Generate HTML document
+    html_content = HTMLPdf2htmlEXGenerator.generate_html_pdf2htmlex_view(
+        page_htmls=page_htmls,
+        pdf2htmlex_css=css_content,
+        explanations=explanations_1indexed,
+        total_pages=total_pages,
+        title=title,
+        font_name=font_name,
+        font_size=font_size,
+        line_spacing=line_spacing,
+        column_count=column_count,
+        column_gap=column_gap,
+        show_column_rule=show_column_rule
+    )
+    
+    return html_content
 
 # For backward compatibility, import everything into this namespace
 __all__ = [
@@ -597,5 +795,6 @@ __all__ = [
     "generate_html_screenshot_document",
     "generate_html_pdf2htmlex_document",
     "generate_explanations",
+    "retry_failed_pages",
     "process_markdown_mode",
 ]
