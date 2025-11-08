@@ -104,8 +104,8 @@ COPY --from=builder /usr/local/bin/ /usr/local/bin/
 COPY --chown=appuser:appuser app/ /app/app/
 COPY --chown=appuser:appuser requirements.txt /app/
 
-# 尝试复制字体文件，如果不存在则跳过
-COPY --chown=appuser:appuser assets/fonts/ /app/assets/fonts/ || true
+# 复制字体文件
+COPY --chown=appuser:appuser assets/fonts/ /app/assets/fonts/
 
 # 复制启动脚本
 COPY --chown=appuser:appuser docker/entrypoint.sh /app/entrypoint.sh
