@@ -46,8 +46,8 @@ logs/
 temp/
 
 # Docker 文件
-Dockerfile*
-docker-compose*.yml
+# Note: Dockerfile* and docker-compose*.yml are NOT excluded
+# because they are required for the build context
 .dockerignore
 
 # 文档
