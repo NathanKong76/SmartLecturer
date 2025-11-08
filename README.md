@@ -36,20 +36,109 @@
   - 或 OpenAI 及兼容服务（环境变量 `OPENAI_API_KEY`，可选 `OPENAI_API_BASE`）
 - （可选）pdf2htmlEX：仅在使用 HTML-pdf2htmlEX 模式时需要
 
+
+
+#### 方式一：Docker（推荐）
 ## 安装步骤
 
-### 方式一：使用 PyInstaller 打包版本（最简单）🚀
+### 1. 克隆项目
 
-如果您下载的是 PyInstaller 打包版本（`lecturer-{platform}-v{version}.zip`），无需安装 Python 或依赖：
+```bash
+git clone <项目地址>
+cd lecturer
+```
 
-1. **解压文件**到任意目录
-2. **设置 API Key**（创建 `.env` 文件或设置环境变量）
-3. **运行程序**：
-   - Windows: 双击 `start.bat` 或运行 `lecturer.exe`
-   - Linux: 运行 `./start.sh` 或 `./lecturer`
-   - macOS: 运行 `./start.sh` 或双击 `lecturer.app`
+### 2. 配置环境变量
 
-### 方式二：使用发行版本（推荐）⭐
+创建 `.env` 文件：
+
+```bash
+# 复制环境变量模板
+cp .env.example .env
+```
+
+编辑 `.env` 文件：
+
+```bash
+# LLM 提供商选择：gemini 或 openai
+LLM_PROVIDER=gemini
+
+# Gemini API 配置（如果使用 Gemini）
+GEMINI_API_KEY=你的_GEMINI_API_KEY
+
+# OpenAI API 配置（如果使用 OpenAI）
+OPENAI_API_KEY=你的_OPENAI_API_KEY
+OPENAI_API_BASE=你的自定义API地址  # 可选
+
+# 应用配置
+STREAMLIT_SERVER_PORT=8501
+TZ=Asia/Shanghai
+LC_ALL=C.UTF-8
+LANG=C.UTF-8
+```
+
+### 3. 启动服务
+
+下载Docker Desktop 并打开
+
+**方式A：构建并启动（首次使用或需要重新构建）**
+```bash
+# 构建并启动
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f smart-lecturer
+
+# 停止服务
+docker-compose down
+```
+
+**方式B：直接使用已构建的镜像（推荐，更快）**
+
+如果镜像已经构建完成，可以直接使用镜像启动，无需重新构建：
+
+```bash
+# 使用镜像配置文件启动（推荐）
+docker-compose -f docker-compose.image.yml up -d
+
+# 查看日志
+docker-compose -f docker-compose.image.yml logs -f smart-lecturer
+
+# 停止服务
+docker-compose -f docker-compose.image.yml down
+```
+
+**或者修改 `docker-compose.yml`，将 `build` 部分改为：**
+```yaml
+services:
+  smart-lecturer:
+    image: lecturer-smart-lecturer:latest  # 直接使用镜像
+    # 删除或注释掉 build 部分
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+```
+
+然后使用：
+```bash
+docker-compose up -d
+```
+
+**检查镜像是否存在：**
+```bash
+# Windows PowerShell
+docker images | Select-String "lecturer-smart-lecturer"
+
+# Linux/macOS
+docker images | grep lecturer-smart-lecturer
+```
+
+如果镜像不存在，需要先构建：
+```bash
+docker-compose build
+```
+
+### 方式二：使用发行版本
 
 如果您下载的是 GitHub Release 发行版本，请参考 `RELEASE.md` 文件中的详细说明。
 

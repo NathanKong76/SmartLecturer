@@ -1,0 +1,86 @@
+# 基础镜像
+FROM ubuntu:22.04
+
+# 设置环境变量
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+ENV PYTHONPATH=/app
+ENV STREAMLIT_SERVER_PORT=8501
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3.10-dev \
+    python3.10-distutils \
+    python3-pip \
+    wget \
+    curl \
+    ca-certificates \
+    fonts-liberation \
+    fontconfig \
+    libfontconfig1 \
+    xdg-utils \
+    git \
+    build-essential \
+    cmake \
+    pkg-config \
+    libpoppler-private-dev \
+    libpoppler-dev \
+    libpoppler-glib-dev \
+    libfontconfig1-dev \
+    libfreetype6-dev \
+    libpng-dev \
+    libjpeg-dev \
+    zlib1g-dev \
+    libopenjp2-7-dev \
+    libtiff5-dev \
+    libspiro-dev \
+    libgtk-3-dev \
+    libharfbuzz-dev \
+    libfribidi-dev \
+    libxcb1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装pdf2htmlEX
+WORKDIR /tmp
+RUN wget -O pdf2htmlEX.deb https://github.com/pdf2htmlEX/pdf2htmlEX/releases/download/v0.18.8.rc1/pdf2htmlEX-0.18.8.rc1-master-20200630-Ubuntu-focal-x86_64.deb \
+    && dpkg -i pdf2htmlEX.deb \
+    || (apt-get install -f -y && dpkg -i pdf2htmlEX.deb) \
+    && rm -f pdf2htmlEX.deb
+
+# 验证pdf2htmlEX安装
+RUN pdf2htmlEX --version
+
+# 创建工作目录
+WORKDIR /app
+
+# 复制应用文件
+COPY app/ /app/app/
+COPY requirements.txt /app/
+COPY docker/entrypoint.sh /app/
+RUN chmod +x /app/entrypoint.sh
+
+# 安装Python依赖
+RUN python3.10 -m pip install --upgrade pip \
+    && python3.10 -m pip install --no-cache-dir -r /app/requirements.txt
+
+# 创建必要的目录
+RUN mkdir -p /app/logs /app/temp /app/sync_html_output
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+
+# 暴露端口
+EXPOSE 8501
+
+# 设置入口点
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# 默认启动命令
+CMD ["streamlit", "run", "app/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
