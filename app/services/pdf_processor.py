@@ -115,6 +115,7 @@ async def _generate_explanations_async(
 	global_concurrency_controller=None,
 	on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
 	target_pages: Optional[List[int]] = None,
+	on_partial_save: Optional[Callable[[Dict[int, str], List[int]], None]] = None,
 ) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
 	total_pages = len(page_images)
 	if total_pages == 0:
@@ -129,16 +130,29 @@ async def _generate_explanations_async(
 		if not pages_to_process:
 			return {}, {}, []
 
-	# Use local semaphore for page-level concurrency
-	local_semaphore = asyncio.Semaphore(max(1, concurrency))
+	# Remove local semaphore limit - use global concurrency controller only
+	# Set to a very large value so global controller truly controls all concurrency
+	local_semaphore = asyncio.Semaphore(10000)  # Large value, not a real limit
 	progress_lock = asyncio.Lock()
 	completed = {"count": 0}
 	preview_images: Dict[int, str] = {
 		idx + 1: base64.b64encode(img).decode("utf-8")
 		for idx, img in enumerate(page_images)
 	}
+	
+	# Track current explanations and failed pages for real-time saving
+	current_explanations: Dict[int, str] = {}
+	current_failed_pages: List[int] = []
 
 	async def process_page(page_index: int) -> Tuple[int, str, Optional[Exception]]:
+		# Notify that page processing has started
+		if on_page_status:
+			try:
+				on_page_status(page_index, "processing", None)
+			except Exception as e:
+				# Log the error but don't break processing
+				logger.warning(f"Failed to update page status to 'processing' for page {page_index + 1}: {e}", exc_info=True)
+		
 		# Acquire both local and global semaphores
 		async with local_semaphore:
 			# Use global concurrency controller if available
@@ -195,15 +209,28 @@ async def _generate_explanations_async(
 			async with progress_lock:
 				completed["count"] += 1
 				
-				# Update page status before progress callback
+				# Update current state for real-time saving
+				if error:
+					current_failed_pages.append(page_index + 1)
+					# Remove from explanations if it was there
+					current_explanations.pop(page_index, None)
+				else:
+					current_explanations[page_index] = result.strip()
+					# Remove from failed pages if it was there
+					if (page_index + 1) in current_failed_pages:
+						current_failed_pages.remove(page_index + 1)
+				
+				# Update page status after processing
 				if on_page_status:
 					try:
 						if error:
 							on_page_status(page_index, "failed", str(error))
 						else:
-							on_page_status(page_index, "processing", None)
-					except Exception:
-						pass
+							on_page_status(page_index, "completed", None)
+					except Exception as e:
+						# Log the error but don't break processing
+						status = "failed" if error else "completed"
+						logger.warning(f"Failed to update page status to '{status}' for page {page_index + 1}: {e}", exc_info=True)
 				
 				if on_progress:
 					try:
@@ -211,11 +238,15 @@ async def _generate_explanations_async(
 					except Exception:
 						pass
 				
-				# Update page status after processing
-				if on_page_status and not error:
+				# Trigger real-time save after each page
+				if on_partial_save:
 					try:
-						on_page_status(page_index, "completed", None)
+						# Create a copy to avoid race conditions
+						explanations_copy = current_explanations.copy()
+						failed_pages_copy = current_failed_pages.copy()
+						on_partial_save(explanations_copy, failed_pages_copy)
 					except Exception:
+						# Don't let save errors break the processing
 						pass
 
 			if error:
@@ -268,6 +299,7 @@ def generate_explanations(
 	target_pages: Optional[List[int]] = None,
 	auto_retry_failed_pages: bool = True,
 	max_auto_retries: int = 2,
+	file_hash: Optional[str] = None,
 ) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
 	if not api_key:
 		raise ValueError("api_key is required to generate explanations")
@@ -317,9 +349,44 @@ def generate_explanations(
 		# Assume input is 1-based, convert to 0-based
 		target_pages_0based = [p - 1 for p in target_pages if p > 0]
 	
-	# Initial processing
-	explanations, preview_images, failed_pages = _run_async(
-		_generate_explanations_async(
+	# Create real-time save callback if needed
+	# This will be used to save partial progress
+	on_partial_save_callback = None
+	if file_hash:
+		# Use provided file_hash for real-time saving
+		try:
+			from app.cache_processor import save_result_to_file
+			
+			def save_partial_state(explanations_dict: Dict[int, str], failed_pages_list: List[int]) -> None:
+				"""Save partial state to cache file."""
+				try:
+					partial_result = {
+						"status": "partial" if failed_pages_list else "completed",
+						"explanations": explanations_dict,
+						"failed_pages": failed_pages_list,
+					}
+					save_result_to_file(file_hash, partial_result)
+				except Exception:
+					# Silently fail - don't break processing if save fails
+					pass
+			
+			on_partial_save_callback = save_partial_state
+		except Exception:
+			# If cache processor is not available, skip real-time saving
+			pass
+	
+	# Define async function that adjusts limit and then processes
+	async def _process_with_limit_adjustment():
+		# Adjust global concurrency limit to user-specified value
+		# This makes "concurrency" parameter control total LLM concurrent pages across all files
+		# Wait for completion if new limit is smaller than current active requests
+		await global_controller.adjust_limit_async(
+			max(1, concurrency),
+			wait_for_completion=True  # Wait for current requests to complete
+		)
+		
+		# Now process with the adjusted limit
+		return await _generate_explanations_async(
 			llm_client=llm_client,
 			page_images=[img if img else b"" for img in page_images],
 			user_prompt=user_prompt,
@@ -331,8 +398,11 @@ def generate_explanations(
 			global_concurrency_controller=global_controller,
 			on_page_status=on_page_status,
 			target_pages=target_pages_0based,
+			on_partial_save=on_partial_save_callback,
 		)
-	)
+	
+	# Initial processing
+	explanations, preview_images, failed_pages = _run_async(_process_with_limit_adjustment())
 	
 	# Auto-retry failed pages if enabled
 	if auto_retry_failed_pages and failed_pages and max_auto_retries > 0:
@@ -367,6 +437,7 @@ def generate_explanations(
 					global_concurrency_controller=global_controller,
 					on_page_status=on_page_status,
 					target_pages=failed_pages_0based,
+					on_partial_save=on_partial_save_callback,
 				)
 			)
 			
@@ -415,6 +486,7 @@ def retry_failed_pages(
 	llm_provider: str = "gemini",
 	api_base: Optional[str] = None,
 	on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
+	file_hash: Optional[str] = None,
 ) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
 	"""
 	Retry generating explanations for failed pages only.
@@ -470,6 +542,7 @@ def retry_failed_pages(
 		target_pages=failed_page_numbers,
 		auto_retry_failed_pages=False,  # Don't auto-retry in manual retry
 		max_auto_retries=0,
+		file_hash=file_hash,
 	)
 	
 	# Merge existing explanations with new ones

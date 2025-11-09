@@ -1123,6 +1123,11 @@ def compose_pdf(src_bytes: bytes, explanations: Dict[int, str], right_ratio: flo
         try:
             for pno in range(src_doc.page_count):
                 expl = explanations.get(pno, "")
+                # Ensure explanation is a string (handle cases where it might be None or other types)
+                if expl is None:
+                    expl = ""
+                elif not isinstance(expl, str):
+                    expl = str(expl)
                 _compose_vector(dst_doc, src_doc, pno, right_ratio, font_size, expl, 
                                font_name=font_name, render_mode=render_mode, 
                                line_spacing=line_spacing, column_padding=column_padding)

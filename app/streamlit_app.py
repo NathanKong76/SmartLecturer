@@ -39,6 +39,8 @@ from app.cache_processor import (
 	get_file_hash,
 	save_result_to_file,
 	load_result_from_file,
+	get_cache_stats,
+	clear_cache,
 	TEMP_DIR  # Also export TEMP_DIR for backward compatibility
 )
 
@@ -122,8 +124,9 @@ def sidebar_form():
 		# ============================================
 		with st.expander("🔑 API 配置", expanded=True):
 			provider_options = ["Gemini", "OpenAI"]
-			env_provider = os.getenv('LLM_PROVIDER', 'gemini').lower()
-			default_provider_index = 1 if env_provider == 'openai' else 0
+			# 默认选择openai
+			env_provider = os.getenv('LLM_PROVIDER', 'openai').lower()  # 强制默认 openai
+			default_provider_index = 1 if env_provider == 'openai' else 0  # 实际上openai必为1
 			provider_label = st.radio(
 				"LLM 提供方",
 				provider_options,
@@ -193,9 +196,9 @@ def sidebar_form():
 			col1, col2 = st.columns(2)
 			with col1:
 				concurrency = st.slider(
-					"并发页数", 
+					"LLM总并发页数", 
 					1, 100, 50, 1,
-					help="同时处理的页面数量"
+					help="所有文件的总LLM讲解处理并发页数限制（全局限制）"
 				)
 			with col2:
 				dpi = st.number_input(
@@ -352,7 +355,34 @@ def sidebar_form():
 				help="独立的上下文说明提示词，用于指导LLM如何处理多页内容。"
 			)
 		
+		# ============================================
+		# 8. 缓存管理
+		# ============================================
+		st.divider()
+		with st.expander("🗑️ 缓存管理", expanded=False):
+			# Get cache statistics
+			cache_stats = get_cache_stats()
+			
+			# Display cache statistics
+			col1, col2 = st.columns(2)
+			with col1:
+				st.metric("缓存文件数", cache_stats["file_count"])
+			with col2:
+				st.metric("缓存大小", f"{cache_stats['total_size_mb']} MB")
+			
+			# Clear cache button
+			if st.button("🗑️ 清除所有缓存", use_container_width=True, type="secondary"):
+				result = clear_cache()
+				if result["success"]:
+					st.success(f"✅ 已清除 {result['deleted_count']} 个缓存文件（{result['deleted_size_mb']} MB）")
+					st.rerun()
+				else:
+					st.error("❌ 清除缓存失败")
+			
+			st.caption(f"缓存目录: {TEMP_DIR}")
+			st.caption("清除缓存后，相同文件将重新处理并生成新的缓存。")
 	
+
 	return {
 		"llm_provider": llm_provider,
 		"api_key": api_key,
@@ -462,18 +492,28 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 	
 	# Calculate file-level concurrency (simple: max 20, don't exceed file count)
 	file_count = len(uploaded_files)
-	max_file_concurrency = min(20, file_count)
+	global_concurrency = params.get("concurrency", 50)
+	
+	# If global concurrency is 1, force file concurrency to 1 as well
+	# This ensures that when LLM total concurrency is 1, only one file is processed at a time
+	if global_concurrency == 1:
+		max_file_concurrency = 1
+	else:
+		max_file_concurrency = min(20, file_count)
 	
 	# Decide whether to use concurrent processing
 	use_concurrent = file_count > 1 and max_file_concurrency > 1
 	
 	# Display concurrency information
 	if use_concurrent:
-		page_concurrency = params.get("concurrency", 50)
-		theoretical_max = page_concurrency * file_count
 		st.info(
 			f"并发设置: {max_file_concurrency} 个文件并发处理 "
-			f"(页面并发: {page_concurrency}, 理论最大并发: {theoretical_max})"
+			f"(LLM总并发页数限制: {global_concurrency})"
+		)
+	elif global_concurrency == 1 and file_count > 1:
+		st.info(
+			f"并发设置: 单文件处理模式 "
+			f"(LLM总并发页数限制: {global_concurrency})"
 		)
 	
 	# Define function to process a single file
@@ -492,7 +532,7 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			
 			# Start file processing
 			progress_tracker.start_file(filename)
-			progress_tracker.update_file_stage(filename, 0)  # Stage 0: Rendering
+			progress_tracker.update_file_stage(filename, 0)  # Stage 0: 给PDF页面截图
 			
 			# Read file bytes and get cache hash
 			uploaded_file.seek(0)  # Reset file pointer
@@ -500,14 +540,27 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			file_hash = get_file_hash(src_bytes, params)
 			cached_result = load_result_from_file(file_hash)
 			
+			# Create enhanced progress callback that updates stage
+			def enhanced_on_progress(done: int, total: int):
+				"""Enhanced progress callback that updates stage based on progress."""
+				if on_progress:
+					on_progress(done, total)
+				# Update to stage 1 when starting to generate explanations
+				# Stage 0 (screenshot) is done before generate_explanations is called
+				# Stage 1 (LLM generation) happens during generate_explanations
+				if done > 0:
+					progress_tracker.update_file_stage(filename, 1)  # Stage 1: 用LLM生成讲解
+			
 			# Process file with progress callbacks
 			result = process_single_file_with_progress(
 				src_bytes, filename, params, file_hash, cached_result,
-				on_progress=on_progress, on_page_status=on_page_status
+				on_progress=enhanced_on_progress, on_page_status=on_page_status
 			)
 			
-			# Update stage to composing
-			progress_tracker.update_file_stage(filename, 2)  # Stage 2: Composing
+			# Update stage to composing (stage 2 happens during compose_pdf)
+			# Note: compose_pdf is called inside process_single_file_with_progress
+			# So we update stage 2 here to indicate final composition is happening
+			progress_tracker.update_file_stage(filename, 2)  # Stage 2: 合成文档
 			
 			# Update result
 			StateManager.get_batch_results()[filename] = result
@@ -546,7 +599,7 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 				filename = uploaded_file.name
 				# Mark file as processing immediately after submission
 				progress_tracker.start_file(filename)
-				progress_tracker.update_file_stage(filename, 0)  # Stage 0: Rendering
+				progress_tracker.update_file_stage(filename, 0)  # Stage 0: 给PDF页面截图
 				
 				on_progress, on_page_status = file_callbacks[filename]
 				future = executor.submit(
@@ -563,7 +616,7 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			# Collect results as they complete with periodic UI updates
 			completed_count = 0
 			last_render_time = time.time()
-			render_interval = 0.3  # Update UI every 0.3 seconds
+			render_interval = 0.1  # Update UI every 0.1 seconds (reduced for more responsive UI)
 			pending_futures = set(future_to_file.keys())
 			
 			while pending_futures:
@@ -598,6 +651,9 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 				if current_time - last_render_time >= render_interval:
 					progress_tracker.force_render()
 					last_render_time = current_time
+				else:
+					# Even if not time for full render, try a throttled render
+					progress_tracker.render()
 			
 			# Final render
 			progress_tracker.force_render()
@@ -610,7 +666,11 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			def create_progress_callbacks(fname: str):
 				def on_progress(done: int, total: int):
 					progress_tracker.update_file_page_progress(fname, done, total)
-					progress_tracker.update_file_stage(fname, 1)  # Stage 1: Generating
+					# Update to stage 1 when starting to generate explanations
+					# Stage 0 (screenshot) is done before generate_explanations is called
+					# Stage 1 (LLM generation) happens during generate_explanations
+					if done > 0:
+						progress_tracker.update_file_stage(fname, 1)  # Stage 1: 用LLM生成讲解
 					progress_tracker.render()
 				
 				def on_page_status(page_index: int, status: str, error: Optional[str]):
@@ -899,6 +959,8 @@ def main():
 								file_status.write(f"{retry_filename}: {msg}")
 							
 							with st.spinner(f"重试 {retry_filename} 的失败页面中..."):
+								# Get file hash for caching
+								retry_file_hash = get_file_hash(src_bytes, params)
 								# Use retry_failed_pages function
 								merged_explanations, preview_images, remaining_failed_pages = pdf_processor.retry_failed_pages(
 									src_bytes=src_bytes,
@@ -920,6 +982,7 @@ def main():
 									context_prompt=params.get("context_prompt", None),
 									llm_provider=params.get("llm_provider", "gemini"),
 									api_base=params.get("api_base"),
+									file_hash=retry_file_hash,
 								)
 								
 								# Re-compose PDF with merged explanations
@@ -1328,7 +1391,10 @@ def main():
 				def create_progress_callbacks(fname: str):
 					def on_progress(done: int, total: int):
 						progress_tracker.update_file_page_progress(fname, done, total)
-						progress_tracker.update_file_stage(fname, 1)  # Stage 1: Composing
+						# For json_regeneration mode: Stage 1 is "合成文档"
+						# on_progress is called during document composition
+						if done > 0:
+							progress_tracker.update_file_stage(fname, 1)  # Stage 1: 合成文档
 						progress_tracker.render()
 					
 					def on_page_status(page_index: int, status: str, error: Optional[str]):

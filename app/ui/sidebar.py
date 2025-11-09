@@ -187,9 +187,9 @@ class SidebarForm:
 
         with col2:
             concurrency = st.slider(
-                "并发页数",
+                "LLM总并发页数",
                 1, 100, 50, 1,
-                help="同时处理的页面数量"
+                help="所有文件的总LLM讲解处理并发页数限制（全局限制）"
             )
 
         # Rate Limits

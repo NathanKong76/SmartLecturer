@@ -107,7 +107,7 @@ class DetailedProgressTracker:
             st.session_state[render_throttle_key] = {
                 "last_render_time": 0.0,
                 "pending_render": False,
-                "min_render_interval": 0.3  # Minimum seconds between renders (300ms)
+                "min_render_interval": 0.1  # Minimum seconds between renders (100ms) - reduced for more responsive UI
             }
         self._render_throttle = st.session_state[render_throttle_key]
         
@@ -129,7 +129,8 @@ class DetailedProgressTracker:
                 "current_stage": v.current_stage,
                 "elapsed_time": v.elapsed_time,
                 "pages_per_second": v.pages_per_second,
-                "error": v.error
+                "error": v.error,
+                "page_statuses": v.page_statuses.copy() if v.page_statuses else {}
             } for k, v in self.file_progress.items()},
             "total_pages": self.total_pages,
             "completed_pages": self.completed_pages,
@@ -146,12 +147,16 @@ class DetailedProgressTracker:
             total_pages: Total number of pages in the file
         """
         if filename not in self.file_progress:
-            self.file_progress[filename] = FileProgress(
+            file_prog = FileProgress(
                 filename=filename,
                 status="waiting",
                 total_pages=total_pages,
                 start_time=None
             )
+            # Ensure page_statuses is initialized for all pages
+            if total_pages > 0:
+                file_prog.page_statuses = {i: "waiting" for i in range(total_pages)}
+            self.file_progress[filename] = file_prog
             self.total_pages += total_pages
 
     def start_file(self, filename: str) -> None:
@@ -162,9 +167,20 @@ class DetailedProgressTracker:
             filename: File name
         """
         if filename in self.file_progress:
-            self.file_progress[filename].status = "processing"
-            self.file_progress[filename].start_time = time.time()
-            self.file_progress[filename].current_stage = self.stages[0]
+            file_prog = self.file_progress[filename]
+            file_prog.status = "processing"
+            file_prog.start_time = time.time()
+            file_prog.current_stage = self.stages[0]
+            
+            # Ensure page_statuses is initialized for all pages
+            if not hasattr(file_prog, 'page_statuses') or file_prog.page_statuses is None:
+                file_prog.page_statuses = {}
+            
+            # Initialize page_statuses for all pages if not already done
+            if file_prog.total_pages > 0:
+                for page_idx in range(file_prog.total_pages):
+                    if page_idx not in file_prog.page_statuses:
+                        file_prog.page_statuses[page_idx] = "waiting"
 
     def update_file_stage(self, filename: str, stage_index: int) -> None:
         """
@@ -195,10 +211,37 @@ class DetailedProgressTracker:
             if filename in self.file_progress:
                 file_prog = self.file_progress[filename]
                 file_prog.current_page = current_page
+                old_completed_pages = file_prog.completed_pages
                 file_prog.completed_pages = current_page
                 
                 if total_pages is not None:
                     file_prog.total_pages = total_pages
+                
+                # Ensure page_statuses dict exists and is initialized
+                if not hasattr(file_prog, 'page_statuses') or file_prog.page_statuses is None:
+                    file_prog.page_statuses = {}
+                
+                # Initialize page_statuses for all pages if not already done
+                if file_prog.total_pages > 0:
+                    for idx in range(file_prog.total_pages):
+                        if idx not in file_prog.page_statuses:
+                            file_prog.page_statuses[idx] = "waiting"
+                
+                # Update page_statuses for pages that are now completed
+                # Note: completed_pages is 1-based (represents highest completed page number)
+                # page_statuses keys are 0-based (page index)
+                # Mark pages from old_completed_pages to current_page-1 as completed
+                # (if they haven't been explicitly marked as failed)
+                # Example: if old_completed_pages=2 and current_page=5, mark pages 2,3,4 (0-based) as completed
+                for page_idx in range(old_completed_pages, current_page):
+                    if 0 <= page_idx < file_prog.total_pages:
+                        # Only update if not already marked as failed
+                        if page_idx not in file_prog.failed_pages:
+                            # Only update if status is still "waiting" or "processing"
+                            # Don't overwrite "completed" or "failed" status
+                            current_status = file_prog.page_statuses.get(page_idx, "waiting")
+                            if current_status in ("waiting", "processing", "retrying"):
+                                file_prog.page_statuses[page_idx] = "completed"
                 
                 # Update elapsed time and speed
                 if file_prog.start_time:
@@ -230,6 +273,17 @@ class DetailedProgressTracker:
         with self._lock:
             if filename in self.file_progress:
                 file_prog = self.file_progress[filename]
+                
+                # Ensure page_statuses dict exists and is initialized for all pages
+                if not hasattr(file_prog, 'page_statuses') or file_prog.page_statuses is None:
+                    file_prog.page_statuses = {}
+                
+                # Initialize page_statuses for all pages if not already done
+                if file_prog.total_pages > 0:
+                    for idx in range(file_prog.total_pages):
+                        if idx not in file_prog.page_statuses:
+                            file_prog.page_statuses[idx] = "waiting"
+                
                 # Use "retrying" status if it's a retry attempt and status is processing
                 if is_retry and status == "processing":
                     file_prog.page_statuses[page_index] = "retrying"
@@ -241,7 +295,8 @@ class DetailedProgressTracker:
                     if page_index in file_prog.failed_pages:
                         file_prog.failed_pages.remove(page_index)
                         self.failed_pages_count = max(0, self.failed_pages_count - 1)
-                    # Update completed pages count
+                    # Update completed pages count (1-based)
+                    # If this page is completed, ensure completed_pages is at least page_index + 1
                     if page_index + 1 > file_prog.completed_pages:
                         file_prog.completed_pages = page_index + 1
                     # Recalculate total completed pages
@@ -250,6 +305,15 @@ class DetailedProgressTracker:
                     if page_index not in file_prog.failed_pages:
                         file_prog.failed_pages.append(page_index)
                         self.failed_pages_count += 1
+                    # If a page fails, we should not reduce completed_pages
+                    # But we should ensure the status is correctly set
+                elif status == "processing":
+                    # When a page starts processing, ensure it's not in failed_pages
+                    # (in case it was previously failed and is being retried)
+                    if page_index in file_prog.failed_pages:
+                        # Don't remove from failed_pages yet - wait for completion
+                        # But mark as retrying if it was previously failed
+                        file_prog.page_statuses[page_index] = "retrying"
 
     def complete_file(self, filename: str, success: bool = True, error: Optional[str] = None) -> None:
         """
@@ -422,102 +486,168 @@ class DetailedProgressTracker:
         
         # Render in a container to avoid duplication
         with self.ui_containers["details"].container():
-            with st.expander("📊 详细信息", expanded=False):
-                # File list table
-                st.subheader("文件处理状态")
-                
-                if self.file_progress:
-                    # Create table data
-                    table_data = []
-                    for filename, file_prog in self.file_progress.items():
-                        status_icon = {
-                            "waiting": "⏳",
-                            "processing": "🔄",
-                            "completed": "✅",
-                            "failed": "❌"
-                        }.get(file_prog.status, "❓")
-                        
-                        progress_pct = (
-                            file_prog.completed_pages / file_prog.total_pages * 100
-                            if file_prog.total_pages > 0 else 0
-                        )
-                        
-                        elapsed_str = f"{int(file_prog.elapsed_time // 60)}:{int(file_prog.elapsed_time % 60):02d}" if file_prog.elapsed_time > 0 else "-"
-                        
-                        table_data.append({
-                            "文件": filename,
-                            "状态": f"{status_icon} {file_prog.status}",
-                            "阶段": file_prog.current_stage,
-                            "页面": f"{file_prog.completed_pages}/{file_prog.total_pages}",
-                            "进度": f"{progress_pct:.1f}%",
-                            "速度": f"{file_prog.pages_per_second:.2f} 页/秒" if file_prog.pages_per_second > 0 else "-",
-                            "耗时": elapsed_str
-                        })
+            # File list table
+            st.subheader("📊 详细信息")
+            st.subheader("文件处理状态")
+            
+            if self.file_progress:
+                # Create table data
+                table_data = []
+                for filename, file_prog in self.file_progress.items():
+                    status_icon = {
+                        "waiting": "⏳",
+                        "processing": "🔄",
+                        "completed": "✅",
+                        "failed": "❌"
+                    }.get(file_prog.status, "❓")
                     
-                    st.dataframe(table_data, use_container_width=True)
-                
-                # Current processing file details
-                current_file = None
-                for file_prog in self.file_progress.values():
-                    if file_prog.status == "processing":
-                        current_file = file_prog
-                        break
-                
-                if current_file:
-                    st.subheader(f"当前处理文件: {current_file.filename}")
+                    progress_pct = (
+                        file_prog.completed_pages / file_prog.total_pages * 100
+                        if file_prog.total_pages > 0 else 0
+                    )
                     
-                    # Page status list
-                    if current_file.page_statuses:
-                        st.write("**页面处理状态:**")
-                        cols = st.columns(min(10, current_file.total_pages))
-                        for page_idx in range(current_file.total_pages):
-                            col_idx = page_idx % len(cols)
-                            with cols[col_idx]:
-                                status = current_file.page_statuses.get(page_idx, "waiting")
-                                if status == "completed":
-                                    st.write(f"✅ {page_idx + 1}")
-                                elif status == "failed":
-                                    st.write(f"❌ {page_idx + 1}")
-                                elif status == "retrying":
-                                    st.write(f"🔄 {page_idx + 1} (重试)")
-                                elif status == "processing":
-                                    st.write(f"🔄 {page_idx + 1}")
-                                else:
-                                    st.write(f"⏳ {page_idx + 1}")
+                    elapsed_str = f"{int(file_prog.elapsed_time // 60)}:{int(file_prog.elapsed_time % 60):02d}" if file_prog.elapsed_time > 0 else "-"
+                    
+                    table_data.append({
+                        "文件": filename,
+                        "状态": f"{status_icon} {file_prog.status}",
+                        "阶段": file_prog.current_stage,
+                        "页面": f"{file_prog.completed_pages}/{file_prog.total_pages}",
+                        "进度": f"{progress_pct:.1f}%",
+                        "速度": f"{file_prog.pages_per_second:.2f} 页/秒" if file_prog.pages_per_second > 0 else "-",
+                        "耗时": elapsed_str
+                    })
                 
-                # Performance metrics
-                st.subheader("性能指标")
-                perf_col1, perf_col2, perf_col3 = st.columns(3)
+                st.dataframe(table_data, use_container_width=True)
+            
+            # All files page status details
+            st.subheader("所有文件的页面处理状态")
+            
+            if self.file_progress:
+                # Sort files: processing first, then waiting, then completed, then failed
+                def sort_key(item):
+                    filename, file_prog = item
+                    status_order = {"processing": 0, "waiting": 1, "completed": 2, "failed": 3}
+                    return (status_order.get(file_prog.status, 99), filename)
                 
-                with perf_col1:
-                    st.write(f"**总页数**: {overall.total_pages}")
-                    st.write(f"**已完成页数**: {overall.completed_pages}")
-                    st.write(f"**失败页数**: {overall.failed_pages}")
+                sorted_files = sorted(self.file_progress.items(), key=sort_key)
                 
-                with perf_col2:
-                    st.write(f"**处理速度**: {overall.overall_speed:.2f} 页/秒")
-                    if overall.total_files > 0:
-                        avg_file_time = overall.elapsed_time / overall.total_files
-                        st.write(f"**平均文件耗时**: {int(avg_file_time // 60)}:{int(avg_file_time % 60):02d}")
-                    if overall.completed_pages > 0:
-                        avg_page_time = overall.elapsed_time / overall.completed_pages
-                        st.write(f"**平均页面耗时**: {avg_page_time:.2f} 秒")
-                
-                with perf_col3:
-                    if overall.concurrency_stats:
-                        st.write(f"**当前并发**: {overall.concurrency_stats.current_requests}")
-                        st.write(f"**峰值并发**: {overall.concurrency_stats.peak_requests}")
-                        st.write(f"**阻塞请求**: {overall.concurrency_stats.blocked_requests}")
-                        st.write(f"**总请求数**: {overall.concurrency_stats.total_requests}")
-                    else:
-                        st.write("**并发统计**: 不可用")
-                
-                # Failed files/pages
-                failed_files = [f for f in self.file_progress.values() if f.status == "failed"]
-                if failed_files:
-                    st.subheader("失败文件")
-                    for file_prog in failed_files:
-                        st.error(f"❌ {file_prog.filename}: {file_prog.error or '未知错误'}")
+                for filename, file_prog in sorted_files:
+                    # Determine if expander should be expanded by default
+                    # Expand if file is processing, collapse otherwise
+                    is_expanded = file_prog.status == "processing"
+                    
+                    # Status icon for expander label
+                    status_icon = {
+                        "waiting": "⏳",
+                        "processing": "🔄",
+                        "completed": "✅",
+                        "failed": "❌"
+                    }.get(file_prog.status, "❓")
+                    
+                    # Create expander for each file
+                    with st.expander(
+                        f"{status_icon} {filename} - {file_prog.current_stage} ({file_prog.completed_pages}/{file_prog.total_pages})",
+                        expanded=is_expanded
+                    ):
+                        # Page status list
+                        if file_prog.total_pages > 0:
+                            st.write("**页面处理状态:**")
+                            # Use columns layout for page numbers
+                            cols_per_row = min(10, file_prog.total_pages)
+                            cols = st.columns(cols_per_row)
+                            
+                            # Ensure page_statuses dict exists and is initialized
+                            if not hasattr(file_prog, 'page_statuses') or file_prog.page_statuses is None:
+                                file_prog.page_statuses = {}
+                            
+                            # Initialize page_statuses for all pages if not already done
+                            for page_idx in range(file_prog.total_pages):
+                                if page_idx not in file_prog.page_statuses:
+                                    file_prog.page_statuses[page_idx] = "waiting"
+                            
+                            for page_idx in range(file_prog.total_pages):
+                                col_idx = page_idx % cols_per_row
+                                with cols[col_idx]:
+                                    # Get status from page_statuses, default to "waiting"
+                                    status = file_prog.page_statuses.get(page_idx, "waiting")
+                                    
+                                    # Determine status based on completed_pages and failed_pages
+                                    # Note: page_idx is 0-based, completed_pages is 1-based
+                                    # Priority: failed_pages > page_statuses > completed_pages inference
+                                    if page_idx in file_prog.failed_pages:
+                                        # Failed pages always show as failed
+                                        status = "failed"
+                                    elif status in ("waiting", "processing", "retrying") and (page_idx + 1) <= file_prog.completed_pages:
+                                        # If status is waiting/processing/retrying but page is completed,
+                                        # mark as completed (this handles cases where on_page_status wasn't called)
+                                        status = "completed"
+                                        # Update page_statuses to reflect this (thread-safe update)
+                                        with self._lock:
+                                            file_prog.page_statuses[page_idx] = "completed"
+                                    
+                                    # Display status with appropriate icon
+                                    if status == "completed":
+                                        st.write(f"✅ {page_idx + 1}")
+                                    elif status == "failed":
+                                        st.write(f"❌ {page_idx + 1}")
+                                    elif status == "retrying":
+                                        st.write(f"🔄 {page_idx + 1} (重试)")
+                                    elif status == "processing":
+                                        st.write(f"🔄 {page_idx + 1}")
+                                    else:
+                                        st.write(f"⏳ {page_idx + 1}")
+                            
+                            # Show additional info if available
+                            if file_prog.failed_pages:
+                                st.warning(f"⚠️ 失败页面: {', '.join(map(str, [p + 1 for p in file_prog.failed_pages]))}")
+                            
+                            if file_prog.pages_per_second > 0:
+                                st.caption(f"处理速度: {file_prog.pages_per_second:.2f} 页/秒")
+                            
+                            if file_prog.elapsed_time > 0:
+                                elapsed_mins = int(file_prog.elapsed_time // 60)
+                                elapsed_secs = int(file_prog.elapsed_time % 60)
+                                st.caption(f"已用时间: {elapsed_mins}:{elapsed_secs:02d}")
+                            
+                            if file_prog.error:
+                                st.error(f"错误: {file_prog.error}")
+                        else:
+                            st.info("等待开始处理...")
+            
+            # Performance metrics
+            st.subheader("性能指标")
+            perf_col1, perf_col2, perf_col3 = st.columns(3)
+            
+            with perf_col1:
+                st.write(f"**总页数**: {overall.total_pages}")
+                st.write(f"**已完成页数**: {overall.completed_pages}")
+                st.write(f"**失败页数**: {overall.failed_pages}")
+            
+            with perf_col2:
+                st.write(f"**处理速度**: {overall.overall_speed:.2f} 页/秒")
+                if overall.total_files > 0:
+                    avg_file_time = overall.elapsed_time / overall.total_files
+                    st.write(f"**平均文件耗时**: {int(avg_file_time // 60)}:{int(avg_file_time % 60):02d}")
+                if overall.completed_pages > 0:
+                    avg_page_time = overall.elapsed_time / overall.completed_pages
+                    st.write(f"**平均页面耗时**: {avg_page_time:.2f} 秒")
+            
+            with perf_col3:
+                if overall.concurrency_stats:
+                    st.write(f"**当前并发**: {overall.concurrency_stats.current_requests}")
+                    st.write(f"**峰值并发**: {overall.concurrency_stats.peak_requests}")
+                    st.write(f"**阻塞请求**: {overall.concurrency_stats.blocked_requests}")
+                    st.write(f"**总请求数**: {overall.concurrency_stats.total_requests}")
+                else:
+                    st.write("**并发统计**: 不可用")
+            
+            # Failed files/pages
+            failed_files = [f for f in self.file_progress.values() if f.status == "failed"]
+            if failed_files:
+                st.subheader("失败文件")
+                for file_prog in failed_files:
+                    st.error(f"❌ {file_prog.filename}: {file_prog.error or '未知错误'}")
 
     def render(self, force: bool = False) -> None:
         """
@@ -599,7 +729,11 @@ class DetailedProgressTracker:
         def on_progress(done: int, total: int):
             """Thread-safe progress callback."""
             self.update_file_page_progress(filename, done, total)
-            self.update_file_stage(filename, 1)  # Stage 1: Composing
+            # Update to stage 1 when starting to generate explanations
+            # Stage 0 (screenshot) is done before generate_explanations is called
+            # Stage 1 (LLM generation) happens during generate_explanations
+            if done > 0:
+                self.update_file_stage(filename, 1)  # Stage 1: 用LLM生成讲解
             # Note: render() is not thread-safe, so we skip it here
             # The main thread will call render() periodically
         

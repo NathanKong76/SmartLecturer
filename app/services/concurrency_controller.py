@@ -35,6 +35,7 @@ class GlobalConcurrencyController:
     
     _instance: Optional['GlobalConcurrencyController'] = None
     _lock = asyncio.Lock()
+    _adjust_lock = asyncio.Lock()  # Lock for serializing limit adjustments
     
     def __init__(self, max_global_concurrency: int = 200):
         """
@@ -44,7 +45,8 @@ class GlobalConcurrencyController:
             max_global_concurrency: Maximum total concurrent requests across all operations
         """
         self.max_global_concurrency = max_global_concurrency
-        self.semaphore = asyncio.Semaphore(max_global_concurrency)
+        self.semaphore: Optional[asyncio.Semaphore] = None
+        self._semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
         self.stats = ConcurrencyStats()
         self._active_requests: set[str] = set()
         self._request_counter = 0
@@ -81,6 +83,32 @@ class GlobalConcurrencyController:
             cls._instance = cls(max_global_concurrency)
         return cls._instance
     
+    def _ensure_semaphore(self) -> None:
+        """
+        Ensure semaphore exists and is bound to the current event loop.
+        This method should be called from within an async context.
+        """
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop, create one temporarily (shouldn't happen in normal usage)
+            current_loop = asyncio.get_event_loop()
+        
+        # If semaphore doesn't exist or is bound to a different loop, create a new one
+        if self.semaphore is None or self._semaphore_loop != current_loop:
+            # If we had an old semaphore, we need to account for its current usage
+            # Calculate how many slots are currently in use
+            if self.semaphore is not None:
+                # Get current usage from stats
+                current_used = self.stats.current_requests
+            else:
+                current_used = 0
+            
+            # Create new semaphore with correct available slots
+            available_slots = max(0, self.max_global_concurrency - current_used)
+            self.semaphore = asyncio.Semaphore(available_slots)
+            self._semaphore_loop = current_loop
+    
     async def acquire(self, request_id: Optional[str] = None) -> None:
         """
         Acquire a concurrency slot.
@@ -88,6 +116,9 @@ class GlobalConcurrencyController:
         Args:
             request_id: Optional identifier for this request (for tracking)
         """
+        # Ensure semaphore is bound to current event loop
+        self._ensure_semaphore()
+        
         # Check if we need to wait
         if self.semaphore._value <= 0:
             self.stats.blocked_requests += 1
@@ -117,7 +148,15 @@ class GlobalConcurrencyController:
         Args:
             request_id: Optional identifier for this request
         """
-        self.semaphore.release()
+        # Ensure semaphore exists before releasing
+        if self.semaphore is not None:
+            try:
+                self.semaphore.release()
+            except RuntimeError:
+                # Semaphore might be bound to different loop, ignore
+                # The acquire method will recreate it if needed
+                pass
+        
         self.stats.current_requests = max(0, self.stats.current_requests - 1)
         
         if request_id and request_id in self._active_requests:
@@ -138,15 +177,47 @@ class GlobalConcurrencyController:
     
     def get_available_slots(self) -> int:
         """Get number of available concurrency slots."""
-        return self.semaphore._value
+        if self.semaphore is None:
+            return self.max_global_concurrency
+        try:
+            return self.semaphore._value
+        except (AttributeError, RuntimeError):
+            # Semaphore might be bound to different loop or not exist
+            return self.max_global_concurrency - self.stats.current_requests
     
     def reset_stats(self) -> None:
         """Reset statistics (useful for monitoring periods)."""
         self.stats = ConcurrencyStats()
     
+    async def wait_for_all_requests(self, timeout: float = 300.0) -> None:
+        """
+        Wait for all current requests to complete.
+        
+        Args:
+            timeout: Maximum time to wait in seconds (default 5 minutes)
+        """
+        start_time = time.time()
+        check_interval = 0.1  # Check every 100ms
+        
+        while self.stats.current_requests > 0:
+            if time.time() - start_time > timeout:
+                logger.warning(
+                    f"Timeout waiting for requests to complete. "
+                    f"Still {self.stats.current_requests} active requests."
+                )
+                break
+            await asyncio.sleep(check_interval)
+        
+        logger.info(
+            f"All requests completed. Waited {time.time() - start_time:.2f} seconds."
+        )
+    
     def adjust_limit(self, new_limit: int) -> None:
         """
         Adjust the global concurrency limit.
+        
+        Note: This method does NOT wait for current requests to complete.
+        Use adjust_limit_async() if you need to wait for requests to finish.
         
         Args:
             new_limit: New maximum concurrency limit
@@ -155,25 +226,77 @@ class GlobalConcurrencyController:
             raise ValueError("Concurrency limit must be at least 1")
         
         old_limit = self.max_global_concurrency
+        
+        # If limit hasn't changed, do nothing
+        if new_limit == old_limit:
+            return
+        
+        # Calculate current usage from stats
+        current_used = self.stats.current_requests
+        
+        # If new limit is smaller than current usage, we should wait
+        # But this is a sync method, so we just log a warning
+        if new_limit < current_used:
+            logger.warning(
+                f"Adjusting limit from {old_limit} to {new_limit}, but {current_used} "
+                f"requests are still active. Consider using adjust_limit_async() to wait."
+            )
+        
+        # Update the limit
         self.max_global_concurrency = new_limit
         
-        # Adjust semaphore
-        current_value = self.semaphore._value
-        difference = new_limit - old_limit
-        
-        if difference > 0:
-            # Increase limit: release additional permits
-            for _ in range(difference):
-                self.semaphore.release()
-        elif difference < 0:
-            # Decrease limit: acquire permits to reduce available slots
-            # Note: This won't block existing requests, just prevents new ones
-            pass
+        # Invalidate semaphore so it will be recreated with new limit on next acquire
+        # This ensures the new limit is respected in the current event loop
+        self.semaphore = None
+        self._semaphore_loop = None
         
         logger.info(
             f"Global concurrency limit adjusted from {old_limit} to {new_limit}. "
-            f"Current active: {self.stats.current_requests}"
+            f"Current active: {current_used}, New limit will be applied on next acquire"
         )
+    
+    async def adjust_limit_async(self, new_limit: int, wait_for_completion: bool = True) -> None:
+        """
+        Adjust the global concurrency limit asynchronously, optionally waiting for current requests.
+        This method is serialized using a lock to prevent race conditions.
+        
+        Args:
+            new_limit: New maximum concurrency limit
+            wait_for_completion: If True, wait for all current requests to complete before adjusting
+        """
+        if new_limit < 1:
+            raise ValueError("Concurrency limit must be at least 1")
+        
+        # Serialize limit adjustments to prevent race conditions
+        async with self._adjust_lock:
+            old_limit = self.max_global_concurrency
+            
+            # If limit hasn't changed, do nothing
+            if new_limit == old_limit:
+                return
+            
+            # Calculate current usage from stats
+            current_used = self.stats.current_requests
+            
+            # If new limit is smaller and we should wait, wait for requests to complete
+            if wait_for_completion and new_limit < current_used:
+                logger.info(
+                    f"New limit {new_limit} is smaller than current active requests ({current_used}). "
+                    f"Waiting for requests to complete..."
+                )
+                await self.wait_for_all_requests()
+            
+            # Update the limit
+            self.max_global_concurrency = new_limit
+            
+            # Invalidate semaphore so it will be recreated with new limit on next acquire
+            self.semaphore = None
+            self._semaphore_loop = None
+            
+            logger.info(
+                f"Global concurrency limit adjusted from {old_limit} to {new_limit}. "
+                f"Current active: {self.stats.current_requests}, New limit will be applied on next acquire"
+            )
 
 
 def calculate_optimal_concurrency(

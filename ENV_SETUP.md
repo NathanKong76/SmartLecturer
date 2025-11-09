@@ -166,3 +166,4 @@ export OPENAI_MODEL_NAME="local-model"
 - `app/config.py`：`AppConfig.from_env()` 方法
 - `app/streamlit_app.py`：侧边栏 UI 中的默认值读取
 
+

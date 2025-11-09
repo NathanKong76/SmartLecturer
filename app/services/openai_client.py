@@ -12,6 +12,10 @@ from .gemini_client import RateLimiter, estimate_tokens
 
 
 class OpenAIClient:
+	# Class-level semaphore for request queue (optional, for single-request mode)
+	_request_semaphore: Optional[asyncio.Semaphore] = None
+	_single_request_mode: bool = False
+	
 	def __init__(
 		self,
 		api_key: str,
@@ -23,6 +27,7 @@ class OpenAIClient:
 		rpd_limit: int,
 		api_base: Optional[str] = None,
 		logger=None,
+		single_request_mode: bool = False,
 	) -> None:
 		if not api_key or not isinstance(api_key, str):
 			raise ValueError("api_key cannot be empty and must be a string")
@@ -53,6 +58,11 @@ class OpenAIClient:
 		self.llm = ChatOpenAI(**client_kwargs)
 		self.ratelimiter = RateLimiter(max_rpm=rpm_limit, max_tpm=tpm_budget, max_rpd=rpd_limit)
 		self.logger = logger
+		self.single_request_mode = single_request_mode
+		
+		# Mark single request mode at class level (semaphore will be initialized on first use)
+		if single_request_mode:
+			OpenAIClient._single_request_mode = True
 
 	async def explain_page(self, image_bytes: bytes, system_prompt: str) -> str:
 		return await self.explain_pages_with_context([("当前页", image_bytes)], system_prompt)
@@ -83,6 +93,31 @@ class OpenAIClient:
 				}
 			)
 
+		# If single-request mode is enabled, acquire semaphore before making request
+		if self.single_request_mode or OpenAIClient._single_request_mode:
+			# Initialize semaphore on first use (bound to current event loop)
+			if OpenAIClient._request_semaphore is None:
+				OpenAIClient._request_semaphore = asyncio.Semaphore(1)
+			else:
+				# Ensure semaphore is bound to current event loop
+				try:
+					loop = asyncio.get_running_loop()
+					# Check if semaphore is bound to different loop (if _loop attribute exists)
+					if hasattr(OpenAIClient._request_semaphore, '_loop'):
+						if OpenAIClient._request_semaphore._loop != loop:
+							# Recreate semaphore for current loop
+							OpenAIClient._request_semaphore = asyncio.Semaphore(1)
+				except (RuntimeError, AttributeError):
+					# No running loop or can't check loop, recreate semaphore
+					OpenAIClient._request_semaphore = asyncio.Semaphore(1)
+			
+			async with OpenAIClient._request_semaphore:
+				return await self._make_request_with_retry(content)
+		else:
+			return await self._make_request_with_retry(content)
+	
+	async def _make_request_with_retry(self, content: list[dict]) -> str:
+		"""Make LLM request with retry logic."""
 		backoff = 1.5
 		delay = 1.0
 		for attempt in range(5):

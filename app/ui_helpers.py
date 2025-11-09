@@ -8,12 +8,54 @@ and improve maintainability of the main Streamlit app.
 from typing import Dict, List, Optional, Tuple, Any, Callable
 import logging
 import streamlit as st
+import threading
 
 from app.services import pdf_processor
 from app.services import constants
 
 # Logger for background thread operations
 logger = logging.getLogger(__name__)
+
+
+def _is_main_thread() -> bool:
+    """Check if we're in the main thread."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        ctx = get_script_run_ctx()
+        return ctx is not None
+    except (ImportError, AttributeError, RuntimeError):
+        return False
+
+
+def safe_streamlit_call(func, *args, **kwargs):
+    """
+    Safely call Streamlit functions only in the main thread.
+    In background threads, use logging instead.
+    
+    Args:
+        func: Streamlit function to call (e.g., st.info, st.warning)
+        *args: Arguments to pass to the function
+        **kwargs: Keyword arguments to pass to the function
+    """
+    if _is_main_thread():
+        try:
+            return func(*args, **kwargs)
+        except (RuntimeError, AttributeError) as e:
+            # Fallback to logging if Streamlit call fails
+            logger.info(f"Streamlit call failed, using log: {args[0] if args else ''}")
+    else:
+        # In background thread, use logging
+        message = args[0] if args else str(kwargs)
+        if func == st.info:
+            logger.info(message)
+        elif func == st.warning:
+            logger.warning(message)
+        elif func == st.error:
+            logger.error(message)
+        elif func == st.success:
+            logger.info(f"SUCCESS: {message}")
+        else:
+            logger.info(message)
 
 
 class StateManager:
@@ -142,29 +184,170 @@ def process_single_file_pdf(
     column_padding_value = params.get("column_padding", 10)
     
     # Try to use cached result
-    if cached_result and cached_result.get("status") == "completed":
-        st.info(f"📋 {filename} 使用缓存结果")
-        try:
-            result_bytes = pdf_processor.compose_pdf(
-                src_bytes,
-                cached_result["explanations"],
-                params["right_ratio"],
-                params["font_size"],
-                font_name=(params.get("cjk_font_name") or "SimHei"),
-                render_mode=params.get("render_mode", "markdown"),
-                line_spacing=params["line_spacing"],
-                column_padding=column_padding_value
+    if cached_result:
+        cache_status = cached_result.get("status")
+        
+        if cache_status == "completed":
+            safe_streamlit_call(st.info, f"📋 {filename} 使用缓存结果")
+            try:
+                result_bytes = pdf_processor.compose_pdf(
+                    src_bytes,
+                    cached_result["explanations"],
+                    params["right_ratio"],
+                    params["font_size"],
+                    font_name=(params.get("cjk_font_name") or "SimHei"),
+                    render_mode=params.get("render_mode", "markdown"),
+                    line_spacing=params["line_spacing"],
+                    column_padding=column_padding_value
+                )
+                return {
+                    "status": "completed",
+                    "pdf_bytes": result_bytes,
+                    "explanations": cached_result["explanations"],
+                    "failed_pages": cached_result.get("failed_pages", []),
+                    "json_bytes": None
+                }
+            except Exception as e:
+                logger.warning(f"缓存重新合成失败，尝试重新处理: {str(e)}")
+                # Fall through to reprocessing
+        
+        elif cache_status == "partial":
+            # Handle partial success - continue processing failed pages
+            existing_explanations = cached_result.get("explanations", {})
+            failed_pages = cached_result.get("failed_pages", [])
+            timestamp = cached_result.get("timestamp", "未知时间")
+            
+            # Validate and fix cache data
+            from app.cache_processor import validate_cache_data
+            is_valid, fixed_explanations, fixed_failed_pages, validation_warnings = validate_cache_data(
+                src_bytes, existing_explanations, failed_pages
             )
-            return {
-                "status": "completed",
-                "pdf_bytes": result_bytes,
-                "explanations": cached_result["explanations"],
-                "failed_pages": cached_result["failed_pages"],
-                "json_bytes": None
-            }
-        except Exception as e:
-            logger.warning(f"缓存重新合成失败，尝试重新处理: {str(e)}")
-            # Fall through to reprocessing
+            
+            # Display validation warnings if any
+            if validation_warnings:
+                for warning in validation_warnings:
+                    safe_streamlit_call(st.warning, f"⚠️ {warning}")
+            
+            # If validation failed or no failed pages after fixing, handle accordingly
+            if not is_valid and not fixed_failed_pages:
+                # Cache data is invalid, reprocess from scratch
+                # Fall through to reprocessing section
+                pass
+            elif fixed_failed_pages and fixed_explanations:
+                safe_streamlit_call(st.info, f"📋 {filename} 检测到部分成功状态（保存时间: {timestamp}）")
+                safe_streamlit_call(st.info, f"已成功生成 {len(fixed_explanations)} 页讲解，还有 {len(fixed_failed_pages)} 页失败: {', '.join(map(str, fixed_failed_pages))}")
+                safe_streamlit_call(st.info, "正在继续处理失败的页面...")
+                
+                try:
+                    # Continue processing failed pages with fixed data
+                    merged_explanations, preview_images, remaining_failed_pages = pdf_processor.retry_failed_pages(
+                        src_bytes=src_bytes,
+                        existing_explanations=fixed_explanations,
+                        failed_page_numbers=fixed_failed_pages,
+                        api_key=params["api_key"],
+                        model_name=params["model_name"],
+                        user_prompt=params["user_prompt"],
+                        temperature=params["temperature"],
+                        max_tokens=params["max_tokens"],
+                        dpi=params["dpi"],
+                        concurrency=params["concurrency"],
+                        rpm_limit=params["rpm_limit"],
+                        tpm_budget=params["tpm_budget"],
+                        rpd_limit=params["rpd_limit"],
+                        on_progress=on_progress,
+                        use_context=params.get("use_context", False),
+                        context_prompt=params.get("context_prompt", None),
+                        llm_provider=params.get("llm_provider", "gemini"),
+                        api_base=params.get("api_base"),
+                        on_page_status=on_page_status,
+                        file_hash=file_hash,
+                    )
+                    
+                    # Determine final status
+                    final_status = "completed" if not remaining_failed_pages else "partial"
+                    
+                    result_bytes = pdf_processor.compose_pdf(
+                        src_bytes,
+                        merged_explanations,
+                        params["right_ratio"],
+                        params["font_size"],
+                        font_name=(params.get("cjk_font_name") or "SimHei"),
+                        render_mode=params.get("render_mode", "markdown"),
+                        line_spacing=params["line_spacing"],
+                        column_padding=column_padding_value
+                    )
+                    
+                    result = {
+                        "status": final_status,
+                        "pdf_bytes": result_bytes,
+                        "explanations": merged_explanations,
+                        "failed_pages": remaining_failed_pages,
+                        "json_bytes": None
+                    }
+                    
+                    # Save updated result to cache
+                    save_result_to_file(file_hash, result)
+                    
+                    if remaining_failed_pages:
+                        safe_streamlit_call(st.warning, f"⚠️ {filename} 仍有 {len(remaining_failed_pages)} 页生成失败: {', '.join(map(str, remaining_failed_pages))}")
+                    else:
+                        safe_streamlit_call(st.success, f"✅ {filename} 所有页面都已成功生成讲解！")
+                    
+                    return result
+                except Exception as e:
+                    logger.warning(f"继续处理失败页面时出错: {str(e)}")
+                    # Fall through to reprocessing or return partial result
+                    safe_streamlit_call(st.error, f"继续处理失败页面时出错: {str(e)}")
+                    # Return partial result with fixed explanations
+                    try:
+                        result_bytes = pdf_processor.compose_pdf(
+                            src_bytes,
+                            fixed_explanations,
+                            params["right_ratio"],
+                            params["font_size"],
+                            font_name=(params.get("cjk_font_name") or "SimHei"),
+                            render_mode=params.get("render_mode", "markdown"),
+                            line_spacing=params["line_spacing"],
+                            column_padding=column_padding_value
+                        )
+                        return {
+                            "status": "partial",
+                            "pdf_bytes": result_bytes,
+                            "explanations": fixed_explanations,
+                            "failed_pages": fixed_failed_pages,
+                            "json_bytes": None
+                        }
+                    except Exception:
+                        # If compose also fails, fall through to reprocessing
+                        pass
+            else:
+                # No failed pages after validation, but status is partial - might be completed now
+                # Try to regenerate PDF to verify
+                try:
+                    result_bytes = pdf_processor.compose_pdf(
+                        src_bytes,
+                        fixed_explanations,
+                        params["right_ratio"],
+                        params["font_size"],
+                        font_name=(params.get("cjk_font_name") or "SimHei"),
+                        render_mode=params.get("render_mode", "markdown"),
+                        line_spacing=params["line_spacing"],
+                        column_padding=column_padding_value
+                    )
+                    result = {
+                        "status": "completed",
+                        "pdf_bytes": result_bytes,
+                        "explanations": fixed_explanations,
+                        "failed_pages": [],
+                        "json_bytes": None
+                    }
+                    save_result_to_file(file_hash, result)
+                    safe_streamlit_call(st.success, f"✅ {filename} 所有页面都已成功生成讲解！")
+                    return result
+                except Exception as e:
+                    # Failed to regenerate, fall through to reprocessing
+                    logger.warning(f"验证后重新生成PDF失败: {str(e)}")
+                    pass
     
     # Process from scratch with progress callbacks
     try:
@@ -188,6 +371,7 @@ def process_single_file_pdf(
             on_page_status=on_page_status,
             auto_retry_failed_pages=params.get("auto_retry_failed_pages", True),
             max_auto_retries=params.get("max_auto_retries", 2),
+            file_hash=file_hash,
         )
         
         result_bytes = pdf_processor.compose_pdf(
@@ -201,8 +385,9 @@ def process_single_file_pdf(
             column_padding=column_padding_value
         )
         
+        result_status = "completed" if not failed_pages else "partial"
         result = {
-            "status": "completed",
+            "status": result_status,
             "pdf_bytes": result_bytes,
             "explanations": explanations,
             "failed_pages": failed_pages
@@ -252,38 +437,143 @@ def process_single_file_markdown(
     from app.cache_processor import save_result_to_file
     
     # Try to use cached result
-    if cached_result and cached_result.get("status") == "completed":
-        logger.info(f"📋 {filename} 使用缓存结果")
-        try:
-            markdown_content, explanations, failed_pages, _ = pdf_processor.process_markdown_mode(
-                src_bytes=src_bytes,
-                api_key=params["api_key"],
-                model_name=params["model_name"],
-                user_prompt=params["user_prompt"],
-                temperature=params["temperature"],
-                max_tokens=params["max_tokens"],
-                dpi=params["dpi"],
-                screenshot_dpi=params["screenshot_dpi"],
-                concurrency=params["concurrency"],
-                rpm_limit=params["rpm_limit"],
-                tpm_budget=params["tpm_budget"],
-                rpd_limit=params["rpd_limit"],
-                embed_images=params["embed_images"],
-                title=params["markdown_title"],
-                use_context=params.get("use_context", False),
-                context_prompt=params.get("context_prompt", None),
-                llm_provider=params.get("llm_provider", "gemini"),
-                api_base=params.get("api_base"),
+    if cached_result:
+        cache_status = cached_result.get("status")
+        
+        if cache_status == "completed":
+            safe_streamlit_call(st.info, f"📋 {filename} 使用缓存结果")
+            try:
+                markdown_content, explanations, failed_pages, _ = pdf_processor.process_markdown_mode(
+                    src_bytes=src_bytes,
+                    api_key=params["api_key"],
+                    model_name=params["model_name"],
+                    user_prompt=params["user_prompt"],
+                    temperature=params["temperature"],
+                    max_tokens=params["max_tokens"],
+                    dpi=params["dpi"],
+                    screenshot_dpi=params["screenshot_dpi"],
+                    concurrency=params["concurrency"],
+                    rpm_limit=params["rpm_limit"],
+                    tpm_budget=params["tpm_budget"],
+                    rpd_limit=params["rpd_limit"],
+                    embed_images=params["embed_images"],
+                    title=params["markdown_title"],
+                    use_context=params.get("use_context", False),
+                    context_prompt=params.get("context_prompt", None),
+                    llm_provider=params.get("llm_provider", "gemini"),
+                    api_base=params.get("api_base"),
+                )
+                return {
+                    "status": "completed",
+                    "markdown_content": markdown_content,
+                    "explanations": explanations,
+                    "failed_pages": failed_pages
+                }
+            except Exception as e:
+                logger.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
+                # Fall through to reprocessing
+        
+        elif cache_status == "partial":
+            # Handle partial success for markdown mode
+            existing_explanations = cached_result.get("explanations", {})
+            failed_pages = cached_result.get("failed_pages", [])
+            timestamp = cached_result.get("timestamp", "未知时间")
+            
+            # Validate and fix cache data
+            from app.cache_processor import validate_cache_data
+            is_valid, fixed_explanations, fixed_failed_pages, validation_warnings = validate_cache_data(
+                src_bytes, existing_explanations, failed_pages
             )
-            return {
-                "status": "completed",
-                "markdown_content": markdown_content,
-                "explanations": explanations,
-                "failed_pages": failed_pages
-            }
-        except Exception as e:
-            logger.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
-            # Fall through to reprocessing
+            
+            # Display validation warnings if any
+            if validation_warnings:
+                for warning in validation_warnings:
+                    safe_streamlit_call(st.warning, f"⚠️ {warning}")
+            
+            # If validation failed or no failed pages after fixing, handle accordingly
+            if not is_valid and not fixed_failed_pages:
+                # Cache data is invalid, reprocess from scratch
+                # Fall through to reprocessing section
+                pass
+            elif fixed_failed_pages and fixed_explanations:
+                safe_streamlit_call(st.info, f"📋 {filename} 检测到部分成功状态（保存时间: {timestamp}）")
+                safe_streamlit_call(st.info, f"已成功生成 {len(fixed_explanations)} 页讲解，还有 {len(fixed_failed_pages)} 页失败: {', '.join(map(str, fixed_failed_pages))}")
+                safe_streamlit_call(st.info, "正在继续处理失败的页面...")
+                
+                try:
+                    # Continue processing failed pages with fixed data
+                    merged_explanations, preview_images, remaining_failed_pages = pdf_processor.retry_failed_pages(
+                        src_bytes=src_bytes,
+                        existing_explanations=fixed_explanations,
+                        failed_page_numbers=fixed_failed_pages,
+                        api_key=params["api_key"],
+                        model_name=params["model_name"],
+                        user_prompt=params["user_prompt"],
+                        temperature=params["temperature"],
+                        max_tokens=params["max_tokens"],
+                        dpi=params["dpi"],
+                        concurrency=params["concurrency"],
+                        rpm_limit=params["rpm_limit"],
+                        tpm_budget=params["tpm_budget"],
+                        rpd_limit=params["rpd_limit"],
+                        on_progress=on_progress,
+                        use_context=params.get("use_context", False),
+                        context_prompt=params.get("context_prompt", None),
+                        llm_provider=params.get("llm_provider", "gemini"),
+                        api_base=params.get("api_base"),
+                        on_page_status=on_page_status,
+                        file_hash=file_hash,
+                    )
+                    
+                    # Generate markdown with merged explanations
+                    markdown_content, _images_dir = pdf_processor.generate_markdown_with_screenshots(
+                        src_bytes=src_bytes,
+                        explanations=merged_explanations,
+                        screenshot_dpi=params["screenshot_dpi"],
+                        embed_images=params["embed_images"],
+                        title=params["markdown_title"],
+                    )
+                    
+                    final_status = "completed" if not remaining_failed_pages else "partial"
+                    result = {
+                        "status": final_status,
+                        "markdown_content": markdown_content,
+                        "explanations": merged_explanations,
+                        "failed_pages": remaining_failed_pages
+                    }
+                    
+                    # Save updated result to cache
+                    save_result_to_file(file_hash, result)
+                    
+                    return result
+                except Exception as e:
+                    logger.warning(f"继续处理失败页面时出错: {str(e)}")
+                    # Fall through to reprocessing
+            else:
+                # No failed pages after validation, but status is partial - might be completed now
+                # Try to regenerate markdown to verify
+                try:
+                    from app.services.markdown_generator import generate_markdown_with_screenshots
+                    markdown_content, _ = generate_markdown_with_screenshots(
+                        src_bytes=src_bytes,
+                        explanations=fixed_explanations,
+                        screenshot_dpi=params["screenshot_dpi"],
+                        embed_images=params["embed_images"],
+                        title=params["markdown_title"],
+                    )
+                    result = {
+                        "status": "completed",
+                        "markdown_content": markdown_content,
+                        "explanations": fixed_explanations,
+                        "failed_pages": []
+                    }
+                    save_result_to_file(file_hash, result)
+                    safe_streamlit_call(st.success, f"✅ {filename} 所有页面都已成功生成讲解！")
+                    return result
+                except Exception as e:
+                    # Failed to regenerate, fall through to reprocessing
+                    logger.warning(f"验证后重新生成markdown失败: {str(e)}")
+                    pass
     
     # Process from scratch
     logger.info(f"处理 {filename} 中...")
@@ -309,6 +599,7 @@ def process_single_file_markdown(
             on_page_status=on_page_status,
             auto_retry_failed_pages=params.get("auto_retry_failed_pages", True),
             max_auto_retries=params.get("max_auto_retries", 2),
+            file_hash=file_hash,
         )
         
         # Generate markdown
@@ -371,34 +662,152 @@ def process_single_file_html_screenshot(
     from app.cache_processor import save_result_to_file
     
     # Try to use cached result
-    if cached_result and cached_result.get("status") == "completed":
-        logger.info(f"📋 {filename} 使用缓存结果")
-        try:
-            # Generate HTML from cached explanations
-            base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
-            # Use user-configured title if provided, otherwise use filename
-            title = params.get("markdown_title", "").strip() or base_name
-            html_content = pdf_processor.generate_html_screenshot_document(
-                src_bytes=src_bytes,
-                explanations=cached_result["explanations"],
-                screenshot_dpi=params.get("screenshot_dpi", 150),
-                title=title,
-                font_name=params.get("cjk_font_name", "SimHei"),
-                font_size=params.get("font_size", 14),
-                line_spacing=params.get("line_spacing", 1.2),
-                column_count=params.get("html_column_count", 2),
-                column_gap=params.get("html_column_gap", 20),
-                show_column_rule=params.get("html_show_column_rule", True)
+    if cached_result:
+        cache_status = cached_result.get("status")
+        
+        if cache_status == "completed":
+            safe_streamlit_call(st.info, f"📋 {filename} 使用缓存结果")
+            try:
+                # Generate HTML from cached explanations
+                base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                # Use user-configured title if provided, otherwise use filename
+                title = params.get("markdown_title", "").strip() or base_name
+                html_content = pdf_processor.generate_html_screenshot_document(
+                    src_bytes=src_bytes,
+                    explanations=cached_result["explanations"],
+                    screenshot_dpi=params.get("screenshot_dpi", 150),
+                    title=title,
+                    font_name=params.get("cjk_font_name", "SimHei"),
+                    font_size=params.get("font_size", 14),
+                    line_spacing=params.get("line_spacing", 1.2),
+                    column_count=params.get("html_column_count", 2),
+                    column_gap=params.get("html_column_gap", 20),
+                    show_column_rule=params.get("html_show_column_rule", True)
+                )
+                return {
+                    "status": "completed",
+                    "html_content": html_content,
+                    "explanations": cached_result["explanations"],
+                    "failed_pages": cached_result.get("failed_pages", [])
+                }
+            except Exception as e:
+                logger.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
+                # Fall through to reprocessing
+        
+        elif cache_status == "partial":
+            # Handle partial success for HTML screenshot mode
+            existing_explanations = cached_result.get("explanations", {})
+            failed_pages = cached_result.get("failed_pages", [])
+            timestamp = cached_result.get("timestamp", "未知时间")
+            
+            # Validate and fix cache data
+            from app.cache_processor import validate_cache_data
+            is_valid, fixed_explanations, fixed_failed_pages, validation_warnings = validate_cache_data(
+                src_bytes, existing_explanations, failed_pages
             )
-            return {
-                "status": "completed",
-                "html_content": html_content,
-                "explanations": cached_result["explanations"],
-                "failed_pages": cached_result["failed_pages"]
-            }
-        except Exception as e:
-            logger.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
-            # Fall through to reprocessing
+            
+            # Display validation warnings if any
+            if validation_warnings:
+                for warning in validation_warnings:
+                    safe_streamlit_call(st.warning, f"⚠️ {warning}")
+            
+            # If validation failed or no failed pages after fixing, handle accordingly
+            if not is_valid and not fixed_failed_pages:
+                # Cache data is invalid, reprocess from scratch
+                # Fall through to reprocessing section
+                pass
+            elif fixed_failed_pages and fixed_explanations:
+                safe_streamlit_call(st.info, f"📋 {filename} 检测到部分成功状态（保存时间: {timestamp}）")
+                safe_streamlit_call(st.info, f"已成功生成 {len(fixed_explanations)} 页讲解，还有 {len(fixed_failed_pages)} 页失败: {', '.join(map(str, fixed_failed_pages))}")
+                safe_streamlit_call(st.info, "正在继续处理失败的页面...")
+                
+                try:
+                    # Continue processing failed pages with fixed data
+                    merged_explanations, preview_images, remaining_failed_pages = pdf_processor.retry_failed_pages(
+                        src_bytes=src_bytes,
+                        existing_explanations=fixed_explanations,
+                        failed_page_numbers=fixed_failed_pages,
+                        api_key=params["api_key"],
+                        model_name=params["model_name"],
+                        user_prompt=params["user_prompt"],
+                        temperature=params["temperature"],
+                        max_tokens=params["max_tokens"],
+                        dpi=params["dpi"],
+                        concurrency=params["concurrency"],
+                        rpm_limit=params["rpm_limit"],
+                        tpm_budget=params["tpm_budget"],
+                        rpd_limit=params["rpd_limit"],
+                        on_progress=on_progress,
+                        use_context=params.get("use_context", False),
+                        context_prompt=params.get("context_prompt", None),
+                        llm_provider=params.get("llm_provider", "gemini"),
+                        api_base=params.get("api_base"),
+                        on_page_status=on_page_status,
+                        file_hash=file_hash,
+                    )
+                    
+                    # Generate HTML with merged explanations
+                    base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                    title = params.get("markdown_title", "").strip() or base_name
+                    html_content = pdf_processor.generate_html_screenshot_document(
+                        src_bytes=src_bytes,
+                        explanations=merged_explanations,
+                        screenshot_dpi=params.get("screenshot_dpi", 150),
+                        title=title,
+                        font_name=params.get("cjk_font_name", "SimHei"),
+                        font_size=params.get("font_size", 14),
+                        line_spacing=params.get("line_spacing", 1.2),
+                        column_count=params.get("html_column_count", 2),
+                        column_gap=params.get("html_column_gap", 20),
+                        show_column_rule=params.get("html_show_column_rule", True)
+                    )
+                    
+                    final_status = "completed" if not remaining_failed_pages else "partial"
+                    result = {
+                        "status": final_status,
+                        "html_content": html_content,
+                        "explanations": merged_explanations,
+                        "failed_pages": remaining_failed_pages
+                    }
+                    
+                    # Save updated result to cache
+                    save_result_to_file(file_hash, result)
+                    
+                    return result
+                except Exception as e:
+                    logger.warning(f"继续处理失败页面时出错: {str(e)}")
+                    # Fall through to reprocessing
+            else:
+                # No failed pages after validation, but status is partial - might be completed now
+                # Try to regenerate HTML to verify
+                try:
+                    base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                    title = params.get("markdown_title", "").strip() or base_name
+                    html_content = pdf_processor.generate_html_screenshot_document(
+                        src_bytes=src_bytes,
+                        explanations=fixed_explanations,
+                        screenshot_dpi=params.get("screenshot_dpi", 150),
+                        title=title,
+                        font_name=params.get("cjk_font_name", "SimHei"),
+                        font_size=params.get("font_size", 14),
+                        line_spacing=params.get("line_spacing", 1.2),
+                        column_count=params.get("html_column_count", 2),
+                        column_gap=params.get("html_column_gap", 20),
+                        show_column_rule=params.get("html_show_column_rule", True)
+                    )
+                    result = {
+                        "status": "completed",
+                        "html_content": html_content,
+                        "explanations": fixed_explanations,
+                        "failed_pages": []
+                    }
+                    save_result_to_file(file_hash, result)
+                    safe_streamlit_call(st.success, f"✅ {filename} 所有页面都已成功生成讲解！")
+                    return result
+                except Exception as e:
+                    # Failed to regenerate, fall through to reprocessing
+                    logger.warning(f"验证后重新生成HTML失败: {str(e)}")
+                    pass
     
     # Process from scratch
     logger.info(f"处理 {filename} 中...")
@@ -444,8 +853,9 @@ def process_single_file_html_screenshot(
                     column_gap=params.get("html_column_gap", 20),
                     show_column_rule=params.get("html_show_column_rule", True)
                 )
+                result_status = "completed" if not failed_pages else "partial"
                 result = {
-                    "status": "completed",
+                    "status": result_status,
                     "html_content": html_content,
                     "explanations": explanations,
                     "failed_pages": failed_pages
@@ -508,31 +918,147 @@ def process_single_file_html_pdf2htmlex(
     from app.cache_processor import save_result_to_file
     
     # Try to use cached result
-    if cached_result and cached_result.get("status") == "completed":
-        logger.info(f"📋 {filename} 使用缓存结果")
-        try:
-            base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
-            title = params.get("markdown_title", "").strip() or base_name
-            html_content = pdf_processor.generate_html_pdf2htmlex_document(
-                src_bytes=src_bytes,
-                explanations=cached_result["explanations"],
-                title=title,
-                font_name=params.get("cjk_font_name", "SimHei"),
-                font_size=params.get("font_size", 14),
-                line_spacing=params.get("line_spacing", 1.2),
-                column_count=params.get("html_column_count", 2),
-                column_gap=params.get("html_column_gap", 20),
-                show_column_rule=params.get("html_show_column_rule", True)
+    if cached_result:
+        cache_status = cached_result.get("status")
+        
+        if cache_status == "completed":
+            safe_streamlit_call(st.info, f"📋 {filename} 使用缓存结果")
+            try:
+                base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                title = params.get("markdown_title", "").strip() or base_name
+                html_content = pdf_processor.generate_html_pdf2htmlex_document(
+                    src_bytes=src_bytes,
+                    explanations=cached_result["explanations"],
+                    title=title,
+                    font_name=params.get("cjk_font_name", "SimHei"),
+                    font_size=params.get("font_size", 14),
+                    line_spacing=params.get("line_spacing", 1.2),
+                    column_count=params.get("html_column_count", 2),
+                    column_gap=params.get("html_column_gap", 20),
+                    show_column_rule=params.get("html_show_column_rule", True)
+                )
+                return {
+                    "status": "completed",
+                    "html_content": html_content,
+                    "explanations": cached_result["explanations"],
+                    "failed_pages": cached_result.get("failed_pages", [])
+                }
+            except Exception as e:
+                logger.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
+                # Fall through to reprocessing
+        
+        elif cache_status == "partial":
+            # Handle partial success for HTML pdf2htmlEX mode
+            existing_explanations = cached_result.get("explanations", {})
+            failed_pages = cached_result.get("failed_pages", [])
+            timestamp = cached_result.get("timestamp", "未知时间")
+            
+            # Validate and fix cache data
+            from app.cache_processor import validate_cache_data
+            is_valid, fixed_explanations, fixed_failed_pages, validation_warnings = validate_cache_data(
+                src_bytes, existing_explanations, failed_pages
             )
-            return {
-                "status": "completed",
-                "html_content": html_content,
-                "explanations": cached_result["explanations"],
-                "failed_pages": cached_result["failed_pages"]
-            }
-        except Exception as e:
-            logger.warning(f"缓存重新生成失败，尝试重新处理: {str(e)}")
-            # Fall through to reprocessing
+            
+            # Display validation warnings if any
+            if validation_warnings:
+                for warning in validation_warnings:
+                    safe_streamlit_call(st.warning, f"⚠️ {warning}")
+            
+            # If validation failed or no failed pages after fixing, handle accordingly
+            if not is_valid and not fixed_failed_pages:
+                # Cache data is invalid, reprocess from scratch
+                # Fall through to reprocessing section
+                pass
+            elif fixed_failed_pages and fixed_explanations:
+                safe_streamlit_call(st.info, f"📋 {filename} 检测到部分成功状态（保存时间: {timestamp}）")
+                safe_streamlit_call(st.info, f"已成功生成 {len(fixed_explanations)} 页讲解，还有 {len(fixed_failed_pages)} 页失败: {', '.join(map(str, fixed_failed_pages))}")
+                safe_streamlit_call(st.info, "正在继续处理失败的页面...")
+                
+                try:
+                    # Continue processing failed pages with fixed data
+                    merged_explanations, preview_images, remaining_failed_pages = pdf_processor.retry_failed_pages(
+                        src_bytes=src_bytes,
+                        existing_explanations=fixed_explanations,
+                        failed_page_numbers=fixed_failed_pages,
+                        api_key=params["api_key"],
+                        model_name=params["model_name"],
+                        user_prompt=params["user_prompt"],
+                        temperature=params["temperature"],
+                        max_tokens=params["max_tokens"],
+                        dpi=params["dpi"],
+                        concurrency=params["concurrency"],
+                        rpm_limit=params["rpm_limit"],
+                        tpm_budget=params["tpm_budget"],
+                        rpd_limit=params["rpd_limit"],
+                        on_progress=on_progress,
+                        use_context=params.get("use_context", False),
+                        context_prompt=params.get("context_prompt", None),
+                        llm_provider=params.get("llm_provider", "gemini"),
+                        api_base=params.get("api_base"),
+                        on_page_status=on_page_status,
+                        file_hash=file_hash,
+                    )
+                    
+                    # Generate HTML with merged explanations
+                    base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                    title = params.get("markdown_title", "").strip() or base_name
+                    html_content = pdf_processor.generate_html_pdf2htmlex_document(
+                        src_bytes=src_bytes,
+                        explanations=merged_explanations,
+                        title=title,
+                        font_name=params.get("cjk_font_name", "SimHei"),
+                        font_size=params.get("font_size", 14),
+                        line_spacing=params.get("line_spacing", 1.2),
+                        column_count=params.get("html_column_count", 2),
+                        column_gap=params.get("html_column_gap", 20),
+                        show_column_rule=params.get("html_show_column_rule", True)
+                    )
+                    
+                    final_status = "completed" if not remaining_failed_pages else "partial"
+                    result = {
+                        "status": final_status,
+                        "html_content": html_content,
+                        "explanations": merged_explanations,
+                        "failed_pages": remaining_failed_pages
+                    }
+                    
+                    # Save updated result to cache
+                    save_result_to_file(file_hash, result)
+                    
+                    return result
+                except Exception as e:
+                    logger.warning(f"继续处理失败页面时出错: {str(e)}")
+                    # Fall through to reprocessing
+            else:
+                # No failed pages after validation, but status is partial - might be completed now
+                # Try to regenerate HTML to verify
+                try:
+                    base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                    title = params.get("markdown_title", "").strip() or base_name
+                    html_content = pdf_processor.generate_html_pdf2htmlex_document(
+                        src_bytes=src_bytes,
+                        explanations=fixed_explanations,
+                        title=title,
+                        font_name=params.get("cjk_font_name", "SimHei"),
+                        font_size=params.get("font_size", 14),
+                        line_spacing=params.get("line_spacing", 1.2),
+                        column_count=params.get("html_column_count", 2),
+                        column_gap=params.get("html_column_gap", 20),
+                        show_column_rule=params.get("html_show_column_rule", True)
+                    )
+                    result = {
+                        "status": "completed",
+                        "html_content": html_content,
+                        "explanations": fixed_explanations,
+                        "failed_pages": []
+                    }
+                    save_result_to_file(file_hash, result)
+                    safe_streamlit_call(st.success, f"✅ {filename} 所有页面都已成功生成讲解！")
+                    return result
+                except Exception as e:
+                    # Failed to regenerate, fall through to reprocessing
+                    logger.warning(f"验证后重新生成HTML失败: {str(e)}")
+                    pass
     
     # Process from scratch - parallel execution of explanation generation and pdf2htmlEX conversion
     logger.info(f"处理 {filename} 中...")
@@ -562,6 +1088,7 @@ def process_single_file_html_pdf2htmlex(
                 llm_provider=params.get("llm_provider", "gemini"),
                 api_base=params.get("api_base"),
                 on_page_status=on_page_status,
+                file_hash=file_hash,
             )
         
         def convert_pdf_to_html_task():
@@ -667,8 +1194,9 @@ def process_single_file_html_pdf2htmlex(
                     show_column_rule=params.get("html_show_column_rule", True)
                 )
                 
+                result_status = "completed" if not failed_pages else "partial"
                 result = {
-                    "status": "completed",
+                    "status": result_status,
                     "html_content": html_content,
                     "explanations": explanations,
                     "failed_pages": failed_pages
@@ -837,11 +1365,11 @@ def display_file_result(filename: str, result: Dict[str, Any]):
         result: Processing result dictionary
     """
     if result.get("status") == "completed":
-        st.success(f"✅ {filename} 处理完成！")
+        safe_streamlit_call(st.success, f"✅ {filename} 处理完成！")
         if result.get("failed_pages"):
-            st.warning(f"⚠️ {filename} 中 {len(result['failed_pages'])} 页生成讲解失败")
+            safe_streamlit_call(st.warning, f"⚠️ {filename} 中 {len(result['failed_pages'])} 页生成讲解失败")
     elif result.get("status") == "failed":
-        st.error(f"❌ {filename} 处理失败: {result.get('error', '未知错误')}")
+        safe_streamlit_call(st.error, f"❌ {filename} 处理失败: {result.get('error', '未知错误')}")
 
 
 def build_zip_cache_pdf(batch_results: Dict[str, Dict[str, Any]]) -> Optional[bytes]:
