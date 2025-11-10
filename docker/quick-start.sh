@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Smart Lecturer Docker 快速启动脚本
-# 作者: Smart Lecturer Team
+# 智讲 / PDF-Lecture-AI Docker 快速启动脚本
+# 作者: PDF-Lecture-AI Team
 # 版本: 1.0.0
 # 日期: 2025-11-08
 
@@ -72,7 +72,7 @@ setup_environment() {
     if [ ! -f .env ]; then
         log_info "创建 .env 文件..."
         cat > .env << EOF
-# Smart Lecturer 环境配置
+# 智讲 / PDF-Lecture-AI 环境配置
 # LLM 提供商选择：gemini 或 openai
 LLM_PROVIDER=gemini
 
@@ -153,11 +153,11 @@ show_status() {
     
     echo ""
     log_info "健康检查："
-    docker-compose exec -T smart-lecturer curl -f http://localhost:8501/_stcore/health 2>/dev/null || log_warning "服务可能未完全启动"
+    docker-compose exec -T pdf-lecture-ai curl -f http://localhost:8501/_stcore/health 2>/dev/null || log_warning "服务可能未完全启动"
     
     echo ""
     log_info "查看日志："
-    echo "  docker-compose logs -f smart-lecturer"
+    echo "  docker-compose logs -f pdf-lecture-ai"
     echo ""
     log_info "停止服务："
     echo "  docker-compose down"
@@ -166,7 +166,7 @@ show_status() {
 # 主函数
 main() {
     echo "=========================================="
-    echo "    Smart Lecturer Docker 快速启动"
+    echo "    智讲 / PDF-Lecture-AI Docker 快速启动"
     echo "=========================================="
     echo ""
     
@@ -188,7 +188,7 @@ main() {
     
     echo ""
     echo "=========================================="
-    log_success "Smart Lecturer 启动完成！"
+    log_success "智讲 / PDF-Lecture-AI 启动完成！"
     echo "=========================================="
     echo ""
     log_info "🎉 恭喜！应用已成功启动"
@@ -202,7 +202,7 @@ main() {
 
 # 显示帮助信息
 show_help() {
-    echo "Smart Lecturer Docker 快速启动脚本"
+    echo "智讲 / PDF-Lecture-AI Docker 快速启动脚本"
     echo ""
     echo "用法: $0 [选项]"
     echo ""

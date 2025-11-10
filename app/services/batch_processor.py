@@ -39,12 +39,13 @@ def match_pdf_json_files(pdf_files: List[str], json_files: List[str]) -> Dict[st
         return name.lower()
 
     # 创建标准化名称到原始文件名的映射
-    pdf_normalized = {normalize_filename(pdf): pdf for pdf in pdf_files}
+    # 注意：多个PDF可能标准化到同一个名称，所以我们需要为每个PDF单独处理
     json_normalized = {normalize_filename(json): json for json in json_files}
 
-    # 匹配结果
+    # 匹配结果 - 确保所有PDF都在结果中
     matches = {}
-    for norm_name, pdf_file in pdf_normalized.items():
+    for pdf_file in pdf_files:
+        norm_name = normalize_filename(pdf_file)
         matched_json = json_normalized.get(norm_name)
         matches[pdf_file] = matched_json
 

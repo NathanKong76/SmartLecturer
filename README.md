@@ -1,5 +1,5 @@
 推荐使用HTML-pdf2htmlEX版，排版几乎完美，支持手机和电脑端浏览器使用。但是要安装pdf2htmlEX
-# PDF 讲解流 · Gemini / OpenAI
+# 智讲 / PDF-Lecture-AI
 
 一个基于 Streamlit 的本地应用：批量读取 PDF，逐页调用 Google Gemini 或 OpenAI（含自定义兼容接口）生成中文讲解，支持多种输出格式（PDF讲解版、Markdown截图讲解、HTML截图版、HTML-pdf2htmlEX版）。支持批量下载、讲解 JSON 导出/导入与仅合成模式。
 
@@ -45,7 +45,7 @@
 
 ```bash
 git clone <项目地址>
-cd lecturer
+cd PDF-Lecture-AI
 ```
 
 ### 2. 配置环境变量
@@ -87,7 +87,7 @@ LANG=C.UTF-8
 docker-compose up -d
 
 # 查看日志
-docker-compose logs -f smart-lecturer
+docker-compose logs -f pdf-lecture-ai
 
 # 停止服务
 docker-compose down
@@ -111,8 +111,8 @@ docker-compose -f docker-compose.image.yml down
 **或者修改 `docker-compose.yml`，将 `build` 部分改为：**
 ```yaml
 services:
-  smart-lecturer:
-    image: lecturer-smart-lecturer:latest  # 直接使用镜像
+  pdf-lecture-ai:
+    image: pdf-lecture-ai:latest  # 直接使用镜像
     # 删除或注释掉 build 部分
     # build:
     #   context: .
@@ -127,10 +127,10 @@ docker-compose up -d
 **检查镜像是否存在：**
 ```bash
 # Windows PowerShell
-docker images | Select-String "lecturer-smart-lecturer"
+docker images | Select-String "pdf-lecture-ai"
 
 # Linux/macOS
-docker images | grep lecturer-smart-lecturer
+docker images | grep pdf-lecture-ai
 ```
 
 如果镜像不存在，需要先构建：
@@ -172,7 +172,7 @@ docker-compose build
 
 ```powershell
 # Windows PowerShell
-cd C:\Users\Kong\project\lecturer
+cd C:\Users\Kong\project\PDF-Lecture-AI
 ```
 
 ### 2. 创建虚拟环境并安装依赖
@@ -542,7 +542,7 @@ HTML-pdf2htmlEX版使用说明.md      # pdf2htmlEX 详细使用说明
 
 ```powershell
 # 进入项目目录
-cd C:\Users\Kong\project\lecturer
+cd C:\Users\Kong\project\PDF-Lecture-AI
 
 # 激活虚拟环境
 .\.venv\Scripts\Activate.ps1

@@ -1,8 +1,8 @@
-# Smart Lecturer Docker 部署使用说明
+# 智讲 / PDF-Lecture-AI Docker 部署使用说明
 
 ## 概述
 
-本项目提供了完整的 Docker 部署方案，包含 pdf2htmlEX 工具和主应用，让您在任何支持 Docker 的环境中轻松运行 Smart Lecturer。
+本项目提供了完整的 Docker 部署方案，包含 pdf2htmlEX 工具和主应用，让您在任何支持 Docker 的环境中轻松运行智讲（PDF-Lecture-AI）。
 
 ## 🚀 快速开始
 
@@ -16,7 +16,7 @@
 
 ```bash
 git clone <项目地址>
-cd lecturer
+cd PDF-Lecture-AI
 ```
 
 ### 2. 配置环境变量
@@ -57,7 +57,7 @@ LANG=C.UTF-8
 docker-compose up -d
 
 # 查看日志
-docker-compose logs -f smart-lecturer
+docker-compose logs -f pdf-lecture-ai
 
 # 停止服务
 docker-compose down
@@ -128,7 +128,7 @@ ports:
 
 ```yaml
 services:
-  smart-lecturer:
+  pdf-lecture-ai:
     # ... 其他配置
     deploy:
       resources:
@@ -167,7 +167,7 @@ environment:
 docker-compose ps
 
 # 查看实时日志
-docker-compose logs -f smart-lecturer
+docker-compose logs -f pdf-lecture-ai
 
 # 查看资源使用
 docker stats
@@ -295,7 +295,7 @@ netstat -tulpn | grep 8501
 
 ```bash
 # 进入容器
-docker-compose exec smart-lecturer bash
+docker-compose exec pdf-lecture-ai bash
 
 # 检查 pdf2htmlEX
 pdf2htmlEX --version
@@ -308,7 +308,7 @@ pdf2htmlEX --version
 ```yaml
 # 在 docker-compose.yml 中
 services:
-  smart-lecturer:
+  pdf-lecture-ai:
     deploy:
       resources:
         limits:
@@ -321,7 +321,7 @@ services:
 
 ```bash
 # 查看容器内环境变量
-docker-compose exec smart-lecturer env | grep API
+docker-compose exec pdf-lecture-ai env | grep API
 ```
 
 ### 调试模式
@@ -330,7 +330,7 @@ docker-compose exec smart-lecturer env | grep API
 
 ```bash
 # 交互式启动
-docker-compose run --rm smart-lecturer bash
+docker-compose run --rm pdf-lecture-ai bash
 
 # 在容器内调试
 cd /app
@@ -362,7 +362,7 @@ redis:
     - redis_data:/data
 
 services:
-  smart-lecturer:
+  pdf-lecture-ai:
     environment:
       - REDIS_URL=redis://redis:6379
 ```

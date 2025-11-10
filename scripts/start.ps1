@@ -32,7 +32,7 @@ $projectRoot = Split-Path -Parent $scriptDir
 $venvPath = Join-Path $projectRoot ".venv"
 
 Write-Info "=========================================="
-Write-Info "PDF 讲解流 - 启动脚本"
+Write-Info "智讲 / PDF-Lecture-AI - 启动脚本"
 Write-Info "=========================================="
 Write-Host ""
 Write-Info "项目根目录: $projectRoot"

@@ -2,9 +2,9 @@
 # 使用方式: docker-compose -f docker-compose.image.yml up -d
 
 services:
-  smart-lecturer:
-    image: lecturer-smart-lecturer:latest # 直接使用本地镜像
-    container_name: smart-lecturer
+  pdf-lecture-ai:
+    image: pdf-lecture-ai:latest # 直接使用本地镜像
+    container_name: pdf-lecture-ai
     ports:
       - "8501:8501" # Streamlit 端口
     volumes:
@@ -53,8 +53,8 @@ services:
       start_period: 40s
     # 网络配置
     networks:
-      - smart-lecturer-network
+      - pdf-lecture-ai-network
 
 networks:
-  smart-lecturer-network:
+  pdf-lecture-ai-network:
     driver: bridge

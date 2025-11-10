@@ -178,10 +178,22 @@ class HtmlRenderer:
 			elif "connection" in str(e).lower():
 				error_msg += " (浏览器连接问题，可能需要重新安装Chromium)"
 			# 在Streamlit环境中，不要立即崩溃，提供降级方案
+			# 使用安全的检测方式，避免在后台线程中触发 ScriptRunContext 检查
 			try:
 				import streamlit as st
-				if hasattr(st, 'runtime') and st.runtime.exists():
-					error_msg += " (已在Streamlit环境中)"
+				# 检查模块是否存在，而不是直接调用 exists()（这会触发上下文检查）
+				if hasattr(st, 'runtime') and hasattr(st.runtime, 'exists'):
+					# 只有在主线程中才调用 exists()，避免后台线程中的警告
+					try:
+						from streamlit.runtime.scriptrunner import get_script_run_ctx
+						ctx = get_script_run_ctx()
+						if ctx is not None:
+							# 只有在有有效上下文时才调用 exists()
+							if st.runtime.exists():
+								error_msg += " (已在Streamlit环境中)"
+					except (ImportError, AttributeError, RuntimeError):
+						# 无法获取上下文，假设在 Streamlit 环境中（但不调用 exists()）
+						error_msg += " (可能在Streamlit环境中)"
 			except ImportError:
 				pass
 			raise HtmlRendererError(error_msg)

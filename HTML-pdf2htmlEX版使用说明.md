@@ -164,7 +164,7 @@ pdf2htmlEX version 0.18.8.rc1
 
 ```bash
 # 进入项目目录
-cd C:\Users\Kong\project\lecturer
+cd C:\Users\Kong\project\PDF-Lecture-AI
 
 # 激活虚拟环境（如果有）
 # Windows:

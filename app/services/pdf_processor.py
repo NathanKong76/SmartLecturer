@@ -116,11 +116,16 @@ async def _generate_explanations_async(
 	on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
 	target_pages: Optional[List[int]] = None,
 	on_partial_save: Optional[Callable[[Dict[int, str], List[int]], None]] = None,
+	existing_explanations: Optional[Dict[int, str]] = None,
 ) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
 	total_pages = len(page_images)
 	if total_pages == 0:
 		return {}, {}, []
 
+	# Initialize existing_explanations if not provided
+	if existing_explanations is None:
+		existing_explanations = {}
+	
 	# Filter pages to process if target_pages is specified
 	# target_pages contains 0-based indices
 	pages_to_process = list(range(total_pages))
@@ -129,6 +134,48 @@ async def _generate_explanations_async(
 		pages_to_process = [idx for idx in target_pages if 0 <= idx < total_pages]
 		if not pages_to_process:
 			return {}, {}, []
+	
+	# Skip pages that already have explanations in cache (page-level cache recall)
+	# Only skip if the explanation is not empty/blank
+	# Note: Failed pages are NOT in existing_explanations, so they will be reprocessed
+	# This is correct behavior - failed pages should be retried, not skipped
+	pages_to_process = [
+		idx for idx in pages_to_process 
+		if idx not in existing_explanations or not existing_explanations.get(idx, "").strip()
+	]
+	
+	# If all pages are already cached, return early
+	if not pages_to_process:
+		# All pages are cached, return existing explanations
+		# Update page status for all cached pages
+		if on_page_status:
+			for page_idx in range(total_pages):
+				if page_idx in existing_explanations and existing_explanations[page_idx] and existing_explanations[page_idx].strip():
+					try:
+						on_page_status(page_idx, "completed", None)
+					except Exception:
+						pass
+		
+		# Update progress to show all pages completed
+		if on_progress:
+			try:
+				on_progress(total_pages, total_pages)
+			except Exception:
+				pass
+		
+		# Return existing explanations (filtered to only include pages in target_pages if specified)
+		if target_pages is not None:
+			cached_explanations = {idx: existing_explanations[idx] for idx in target_pages if idx in existing_explanations}
+		else:
+			cached_explanations = existing_explanations.copy()
+		
+		# Generate preview images for all pages
+		preview_images: Dict[int, str] = {
+			idx + 1: base64.b64encode(img).decode("utf-8")
+			for idx, img in enumerate(page_images)
+		}
+		
+		return cached_explanations, preview_images, []
 
 	# Remove local semaphore limit - use global concurrency controller only
 	# Set to a very large value so global controller truly controls all concurrency
@@ -141,8 +188,37 @@ async def _generate_explanations_async(
 	}
 	
 	# Track current explanations and failed pages for real-time saving
-	current_explanations: Dict[int, str] = {}
+	# Start with existing cached explanations
+	current_explanations: Dict[int, str] = existing_explanations.copy() if existing_explanations else {}
 	current_failed_pages: List[int] = []
+	
+	# Count of pages that were skipped (already cached)
+	skipped_count = len([idx for idx in range(total_pages) if idx in existing_explanations and existing_explanations.get(idx, "").strip()])
+	
+	# Update progress for skipped pages
+	if skipped_count > 0 and on_progress:
+		try:
+			on_progress(skipped_count, total_pages)
+		except Exception:
+			pass
+	
+	# Update page status for cached pages
+	if on_page_status:
+		for page_idx in range(total_pages):
+			if page_idx in existing_explanations and existing_explanations[page_idx] and existing_explanations[page_idx].strip():
+				if target_pages is None or page_idx in target_pages:
+					try:
+						on_page_status(page_idx, "completed", None)
+					except Exception:
+						pass
+	
+	# Log skipped pages
+	if skipped_count > 0 and on_log:
+		try:
+			skipped_pages = [idx + 1 for idx in range(total_pages) if idx in existing_explanations and existing_explanations.get(idx, "").strip()]
+			on_log(f"跳过 {skipped_count} 个已缓存的页面: {', '.join(map(str, skipped_pages))}")
+		except Exception:
+			pass
 
 	async def process_page(page_index: int) -> Tuple[int, str, Optional[Exception]]:
 		# Notify that page processing has started
@@ -266,11 +342,16 @@ async def _generate_explanations_async(
 
 	tasks = [asyncio.create_task(process_page(idx)) for idx in pages_to_process]
 	results = await asyncio.gather(*tasks, return_exceptions=False)
-	explanations: Dict[int, str] = {}
+	
+	# Start with existing cached explanations
+	explanations: Dict[int, str] = existing_explanations.copy() if existing_explanations else {}
 	failed_pages: List[int] = []
+	
 	for page_index, text, error in results:
 		if error:
 			failed_pages.append(page_index + 1)
+			# Remove from explanations if it was there (in case of retry failure)
+			explanations.pop(page_index, None)
 		else:
 			explanations[page_index] = text
 
@@ -300,11 +381,55 @@ def generate_explanations(
 	auto_retry_failed_pages: bool = True,
 	max_auto_retries: int = 2,
 	file_hash: Optional[str] = None,
+	existing_explanations: Optional[Dict[int, str]] = None,
 ) -> Tuple[Dict[int, str], Dict[int, str], List[int]]:
+	"""
+	Generate explanations for PDF pages with page-level cache recall support.
+	
+	Args:
+		existing_explanations: Existing explanations dict (0-indexed page -> explanation).
+			Pages with non-empty explanations will be skipped (page-level cache recall).
+		file_hash: File hash for cache. If provided, will try to load existing explanations
+			from cache if existing_explanations is not provided.
+		... (other parameters same as before)
+	"""
 	if not api_key:
 		raise ValueError("api_key is required to generate explanations")
 	if not model_name:
 		raise ValueError("model_name is required to generate explanations")
+	
+	# Load existing explanations from cache if file_hash is provided and existing_explanations is not
+	# Note: Only successful pages are loaded from cache (explanations dict)
+	# Failed pages are stored separately in failed_pages list and are NOT recalled
+	# This ensures failed pages are always reprocessed, which is the correct behavior
+	if existing_explanations is None and file_hash:
+		try:
+			from app.cache_processor import load_result_from_file
+			cached_result = load_result_from_file(file_hash)
+			if cached_result:
+				# Only load successful pages (explanations), not failed pages
+				existing_explanations = cached_result.get("explanations", {})
+				# Convert keys to int if they are strings (JSON always uses string keys)
+				if existing_explanations:
+					first_key = next(iter(existing_explanations.keys()), None)
+					if first_key is not None and isinstance(first_key, str):
+						try:
+							existing_explanations = {int(k): v for k, v in existing_explanations.items()}
+						except (ValueError, TypeError):
+							# If conversion fails, keep original
+							pass
+				if on_log and existing_explanations:
+					try:
+						on_log(f"从缓存加载了 {len(existing_explanations)} 个页面的讲解")
+					except Exception:
+						pass
+		except Exception as e:
+			# Log but don't fail - cache loading is optional
+			logger.debug(f"Failed to load cache for file_hash {file_hash}: {e}")
+	
+	# Initialize existing_explanations if still None
+	if existing_explanations is None:
+		existing_explanations = {}
 
 	llm_client = _create_llm_client(
 		llm_provider=llm_provider,
@@ -399,6 +524,7 @@ def generate_explanations(
 			on_page_status=on_page_status,
 			target_pages=target_pages_0based,
 			on_partial_save=on_partial_save_callback,
+			existing_explanations=existing_explanations,
 		)
 	
 	# Initial processing
@@ -438,6 +564,7 @@ def generate_explanations(
 					on_page_status=on_page_status,
 					target_pages=failed_pages_0based,
 					on_partial_save=on_partial_save_callback,
+					existing_explanations=existing_explanations,
 				)
 			)
 			
@@ -520,6 +647,8 @@ def retry_failed_pages(
 		return existing_explanations, preview_images, []
 	
 	# Generate explanations only for failed pages
+	# Pass existing_explanations to enable page-level cache recall
+	# This ensures that if any failed pages are already in cache, they will be skipped
 	new_explanations, preview_images, new_failed_pages = generate_explanations(
 		src_bytes=src_bytes,
 		api_key=api_key,
@@ -543,6 +672,7 @@ def retry_failed_pages(
 		auto_retry_failed_pages=False,  # Don't auto-retry in manual retry
 		max_auto_retries=0,
 		file_hash=file_hash,
+		existing_explanations=existing_explanations,  # Pass existing explanations for cache recall
 	)
 	
 	# Merge existing explanations with new ones

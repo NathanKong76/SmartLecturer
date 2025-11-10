@@ -12,6 +12,63 @@ import json
 import hashlib
 import tempfile
 
+
+def _is_main_thread() -> bool:
+    """Check if we're in the main thread with valid Streamlit context."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        ctx = get_script_run_ctx()
+        # Need valid context and session_id to be considered main thread
+        return ctx is not None and hasattr(ctx, 'session_id') and ctx.session_id is not None
+    except (ImportError, AttributeError, RuntimeError, TypeError):
+        return False
+
+
+def _safe_cache_data(func):
+    """
+    Thread-safe cache decorator that only uses @st.cache_data in main thread.
+    In background threads, returns a wrapper that calls the function directly.
+    """
+    # Lazy initialization: only create cached_func when first called in main thread
+    cached_func = [None]  # Use list to allow modification in nested function
+    
+    def wrapper(*args, **kwargs):
+        if _is_main_thread():
+            # In main thread, use cached version
+            # Lazy initialize cached_func on first call in main thread
+            if cached_func[0] is None:
+                try:
+                    # Only create cache if we're in a proper Streamlit context
+                    cached_func[0] = st.cache_data(func)
+                except (RuntimeError, AttributeError, TypeError):
+                    # If cache_data fails, fall back to direct call
+                    cached_func[0] = func
+            
+            try:
+                return cached_func[0](*args, **kwargs)
+            except (RuntimeError, AttributeError, TypeError):
+                # If cached call fails, fall back to direct call
+                return func(*args, **kwargs)
+        else:
+            # In background thread, call function directly without cache
+            # This avoids ScriptRunContext warnings completely
+            return func(*args, **kwargs)
+    
+    # Copy clear method if available (for cache clearing)
+    def clear_cache():
+        """Clear the cache if available."""
+        if cached_func[0] is not None and hasattr(cached_func[0], 'clear'):
+            try:
+                # Only clear if we can access it safely
+                if _is_main_thread():
+                    cached_func[0].clear()
+            except (RuntimeError, AttributeError, TypeError):
+                pass
+    
+    wrapper.clear = clear_cache
+    
+    return wrapper
+
 # Cache utilities (moved from streamlit_app to avoid circular import)
 TEMP_DIR = os.path.join(tempfile.gettempdir(), "pdf_processor_cache")
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -24,26 +81,95 @@ def get_file_hash(file_bytes: bytes, params: dict) -> str:
 
 
 def save_result_to_file(file_hash: str, result: dict) -> str:
-	"""Save processing result to temporary file."""
+	"""
+	Save processing result to temporary file with atomic write.
+	
+	Uses atomic write (write to temp file then rename) to prevent
+	file corruption in concurrent scenarios.
+	"""
 	filepath = os.path.join(TEMP_DIR, f"{file_hash}.json")
-	with open(filepath, 'w', encoding='utf-8') as f:
-		# Don't save pdf_bytes to file, only save other information
-		result_copy = result.copy()
-		result_copy.pop('pdf_bytes', None)
-		
-		# If status is not explicitly set, determine it based on failed_pages
-		if "status" not in result_copy:
-			failed_pages = result_copy.get("failed_pages", [])
-			if failed_pages:
-				result_copy["status"] = "partial"
-			else:
-				result_copy["status"] = "completed"
-		
-		# Add timestamp for tracking
-		from datetime import datetime
-		result_copy["timestamp"] = datetime.now().isoformat()
-		
-		json.dump(result_copy, f, ensure_ascii=False, indent=2)
+	temp_filepath = filepath + ".tmp"
+	
+	# Don't save pdf_bytes to file, only save other information
+	result_copy = result.copy()
+	result_copy.pop('pdf_bytes', None)
+	
+	# If status is not explicitly set, determine it based on failed_pages
+	if "status" not in result_copy:
+		failed_pages = result_copy.get("failed_pages", [])
+		if failed_pages:
+			result_copy["status"] = "partial"
+		else:
+			result_copy["status"] = "completed"
+	
+	# Add timestamp for tracking
+	from datetime import datetime
+	result_copy["timestamp"] = datetime.now().isoformat()
+	
+	# Atomic write: write to temp file first, then rename
+	# Use retry mechanism for Windows file locking issues
+	max_retries = 3
+	retry_delay = 0.1  # 100ms
+	
+	for attempt in range(max_retries):
+		try:
+			# Ensure TEMP_DIR exists
+			os.makedirs(TEMP_DIR, exist_ok=True)
+			
+			# Write to temporary file
+			with open(temp_filepath, 'w', encoding='utf-8') as f:
+				json.dump(result_copy, f, ensure_ascii=False, indent=2)
+			
+			# Atomic rename (replaces existing file if it exists)
+			# On Windows, need to remove existing file first if it exists
+			if os.path.exists(filepath):
+				try:
+					os.remove(filepath)
+				except (OSError, PermissionError):
+					# File might be locked, wait and retry
+					if attempt < max_retries - 1:
+						import time
+						time.sleep(retry_delay * (attempt + 1))
+						# Clean up temp file before retry
+						try:
+							if os.path.exists(temp_filepath):
+								os.remove(temp_filepath)
+						except Exception:
+							pass
+						continue
+					raise
+			
+			os.rename(temp_filepath, filepath)
+			break  # Success, exit retry loop
+			
+		except (OSError, PermissionError) as e:
+			# File locking or permission error
+			if attempt < max_retries - 1:
+				# Clean up temp file before retry
+				try:
+					if os.path.exists(temp_filepath):
+						os.remove(temp_filepath)
+				except Exception:
+					pass
+				import time
+				time.sleep(retry_delay * (attempt + 1))
+				continue
+			# Last attempt failed, clean up and re-raise
+			try:
+				if os.path.exists(temp_filepath):
+					os.remove(temp_filepath)
+			except Exception:
+				pass
+			raise
+		except Exception as e:
+			# Other errors - clean up and re-raise
+			try:
+				if os.path.exists(temp_filepath):
+					os.remove(temp_filepath)
+			except Exception:
+				pass
+			raise
+	
 	return filepath
 
 
@@ -250,7 +376,7 @@ def validate_cache_data(
 	return is_valid, fixed_explanations, fixed_failed_pages, warnings
 
 
-@st.cache_data
+@_safe_cache_data
 def cached_process_pdf(src_bytes: bytes, params: dict) -> dict:
 	"""Cached PDF processing function."""
 	from app.services import pdf_processor
@@ -461,7 +587,7 @@ def cached_process_pdf(src_bytes: bytes, params: dict) -> dict:
 		return result
 
 
-@st.cache_data
+@_safe_cache_data
 def cached_process_markdown(src_bytes: bytes, params: dict) -> dict:
 	"""Cached markdown processing function."""
 	from app.services import pdf_processor

@@ -28,7 +28,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 VENV_PATH="$PROJECT_ROOT/.venv"
 
 info "=========================================="
-info "PDF 讲解流 - 启动脚本"
+info "智讲 / PDF-Lecture-AI - 启动脚本"
 info "=========================================="
 echo ""
 

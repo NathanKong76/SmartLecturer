@@ -31,7 +31,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
 
 Write-Info "=========================================="
-Write-Info "PDF 讲解流 - 安装脚本"
+Write-Info "智讲 / PDF-Lecture-AI - 安装脚本"
 Write-Info "=========================================="
 Write-Host ""
 

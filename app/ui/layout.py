@@ -12,7 +12,7 @@ class PageLayout:
 
     def __init__(
         self,
-        page_title: str = "PDF 讲解流 · Gemini 2.5 Pro",
+        page_title: str = "智讲 / PDF-Lecture-AI",
         layout: str = "wide",
         initial_sidebar_state: str = "expanded"
     ):

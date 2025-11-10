@@ -12,5 +12,8 @@ markdown==3.6
 beautifulsoup4==4.12.3
 # 可选：更好的 Markdown 支持（表格/代码高亮等），如不需要可移除
 pymdown-extensions==10.8.1
+# 可选：更好的 Markdown 支持（表格/代码高亮等），如不需要可移除
+pytest==8.4.2
+pytest-asyncio==0.24.0
 # 可选：Windows 字体检测（可选安装，如果未安装将使用默认字体列表）
 # pywin32>=306

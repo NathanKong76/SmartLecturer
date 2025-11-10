@@ -330,13 +330,11 @@ def calculate_optimal_concurrency(
         adjusted_page_concurrency = page_concurrency
         adjusted_file_concurrency = file_count
     
-    # Also consider API RPM limit (with safety margin)
-    # Assume average request takes 2-3 seconds, so we want to stay under RPM/2
-    safe_rpm = max(1, rpm_limit // 2)
-    if adjusted_page_concurrency * adjusted_file_concurrency > safe_rpm:
-        # Scale down to stay within safe RPM
-        scale_factor = safe_rpm / (adjusted_page_concurrency * adjusted_file_concurrency)
-        adjusted_page_concurrency = max(1, int(adjusted_page_concurrency * scale_factor))
+    # Note: RPM limit is automatically controlled by RateLimiter at runtime,
+    # so we don't need to adjust concurrency based on RPM here. Concurrency and RPM are different concepts:
+    # - Concurrency: number of simultaneous requests
+    # - RPM: number of requests per minute
+    # The RateLimiter will ensure RPM limits are respected during actual execution.
     
     return adjusted_page_concurrency, adjusted_file_concurrency
 

@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 info "=========================================="
-info "PDF 讲解流 - 安装脚本"
+info "智讲 / PDF-Lecture-AI - 安装脚本"
 info "=========================================="
 echo ""
 

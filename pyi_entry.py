@@ -101,7 +101,7 @@ if __name__ == '__main__':
     # Print startup info
     try:
         print("=" * 50)
-        print("PDF 讲解流 - 正在启动...")
+        print("智讲 / PDF-Lecture-AI - 正在启动...")
         print("=" * 50)
         print(f"项目根目录: {project_root}")
         if getattr(sys, 'frozen', False):

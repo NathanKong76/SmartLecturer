@@ -46,15 +46,11 @@ def validate_concurrency_config(
         )
         is_valid = False
     
-    # Check against RPM limit (with safety margin)
-    # Assume average request takes 2-3 seconds
-    safe_rpm = max(1, rpm_limit // 2)
-    if theoretical_max > safe_rpm:
-        warnings.append(
-            f"理论最大并发数 ({theoretical_max}) 可能超过安全的RPM限制 ({safe_rpm})。"
-            f"建议降低并发页数或文件数，或提高RPM限制。"
-        )
-        is_valid = False
+    # Note: RPM limit is automatically controlled by RateLimiter at runtime,
+    # so we don't need to validate it here. Concurrency and RPM are different concepts:
+    # - Concurrency: number of simultaneous requests
+    # - RPM: number of requests per minute
+    # The RateLimiter will ensure RPM limits are respected during actual execution.
     
     # Check if page concurrency is too high
     if page_concurrency > 100:
@@ -140,11 +136,9 @@ def get_concurrency_recommendations(
         recommended_page_concurrency = 20
         recommended_file_concurrency = min(2, file_count)
     
-    # Adjust based on RPM limit
-    safe_rpm = max(1, rpm_limit // 2)
-    max_safe_concurrency = safe_rpm // max(1, file_count)
-    if recommended_page_concurrency > max_safe_concurrency:
-        recommended_page_concurrency = max(1, max_safe_concurrency)
+    # Note: RPM limit is automatically controlled by RateLimiter at runtime,
+    # so we don't need to adjust recommendations based on RPM here.
+    # The RateLimiter will ensure RPM limits are respected during actual execution.
     
     return {
         "page_concurrency": recommended_page_concurrency,

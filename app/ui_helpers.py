@@ -17,6 +17,127 @@ from app.services import constants
 logger = logging.getLogger(__name__)
 
 
+def _get_total_pages_from_pdf(
+    src_bytes: bytes,
+    cached_result: Optional[Dict[str, Any]]
+) -> int:
+    """
+    Determine total page count for cached results.
+
+    Tries to read directly from the PDF bytes first, then falls back
+    to cached metadata if available.
+    """
+    total_pages = 0
+    try:
+        import fitz
+        pdf_doc = fitz.open(stream=src_bytes, filetype="pdf")
+        total_pages = pdf_doc.page_count
+        pdf_doc.close()
+    except Exception as exc:
+        logger.debug("Unable to inspect PDF for page count: %s", exc)
+
+    if total_pages <= 0 and cached_result:
+        # Fall back to explicit metadata if present
+        total_pages = int(cached_result.get("total_pages") or 0)
+
+    if total_pages <= 0 and cached_result:
+        # Use explanations length as a heuristic
+        explanations = cached_result.get("explanations")
+        if isinstance(explanations, dict):
+            total_pages = max(total_pages, len(explanations))
+            # Some caches use 0-based or 1-based numeric keys - use their max
+            try:
+                numeric_keys = [
+                    int(key)
+                    for key in explanations.keys()
+                    if str(key).lstrip("-").isdigit()
+                ]
+                if numeric_keys:
+                    total_pages = max(total_pages, max(numeric_keys) + 1)
+            except Exception:
+                # Ignore parsing issues - len(explanations) is a safe lower bound
+                pass
+        elif isinstance(explanations, list):
+            total_pages = max(total_pages, len(explanations))
+
+    if total_pages <= 0 and cached_result:
+        failed_pages = cached_result.get("failed_pages") or []
+        numeric_failed = []
+        for page in failed_pages:
+            try:
+                numeric_failed.append(int(page))
+            except (TypeError, ValueError):
+                continue
+        if numeric_failed:
+            total_pages = max(total_pages, max(numeric_failed))
+
+    return total_pages
+
+
+def _emit_cache_progress_updates(
+    filename: str,
+    src_bytes: bytes,
+    cached_result: Dict[str, Any],
+    on_progress: Optional[Callable[[int, int], None]],
+    on_page_status: Optional[Callable[[int, str, Optional[str]], None]]
+) -> int:
+    """
+    Notify progress/page callbacks when cached data short-circuits processing.
+    """
+    if not (on_progress or on_page_status):
+        return 0
+
+    total_pages = _get_total_pages_from_pdf(src_bytes, cached_result)
+    if total_pages <= 0:
+        logger.debug(
+            "Unable to determine total pages for %s cache progress update",
+            filename
+        )
+        return 0
+
+    if on_progress:
+        try:
+            on_progress(0, total_pages)
+        except Exception as exc:
+            logger.debug("Cache progress start callback failed for %s: %s", filename, exc)
+
+    failed_pages_raw = cached_result.get("failed_pages") or []
+    failed_pages: set[int] = set()
+    for page in failed_pages_raw:
+        try:
+            failed_pages.add(int(page))
+        except (TypeError, ValueError):
+            continue
+
+    if on_page_status:
+        for page_idx in range(total_pages):
+            page_num = page_idx + 1
+            if page_num in failed_pages:
+                status = "failed"
+                error_msg = "缓存中标记为失败"
+            else:
+                status = "completed"
+                error_msg = None
+            try:
+                on_page_status(page_idx, status, error_msg)
+            except Exception as exc:
+                logger.debug(
+                    "Cache page status callback failed for %s (page %d): %s",
+                    filename,
+                    page_idx,
+                    exc
+                )
+                break
+
+    if on_progress:
+        try:
+            on_progress(total_pages, total_pages)
+        except Exception as exc:
+            logger.debug("Cache progress completion callback failed for %s: %s", filename, exc)
+
+    return total_pages
+
+
 def _is_main_thread() -> bool:
     """Check if we're in the main thread."""
     try:
@@ -39,12 +160,31 @@ def safe_streamlit_call(func, *args, **kwargs):
     """
     if _is_main_thread():
         try:
+            # Double-check we're still in main thread before calling
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            ctx = get_script_run_ctx()
+            if ctx is None or not hasattr(ctx, 'session_id'):
+                # No valid context, use logging instead
+                message = args[0] if args else str(kwargs)
+                if func == st.info:
+                    logger.info(message)
+                elif func == st.warning:
+                    logger.warning(message)
+                elif func == st.error:
+                    logger.error(message)
+                elif func == st.success:
+                    logger.info(f"SUCCESS: {message}")
+                else:
+                    logger.info(message)
+                return
+            # Valid context, call Streamlit function
             return func(*args, **kwargs)
-        except (RuntimeError, AttributeError) as e:
+        except (RuntimeError, AttributeError, TypeError) as e:
             # Fallback to logging if Streamlit call fails
-            logger.info(f"Streamlit call failed, using log: {args[0] if args else ''}")
+            message = args[0] if args else str(kwargs)
+            logger.info(f"Streamlit call failed, using log: {message}")
     else:
-        # In background thread, use logging
+        # In background thread, always use logging to avoid ScriptRunContext warnings
         message = args[0] if args else str(kwargs)
         if func == st.info:
             logger.info(message)
@@ -59,11 +199,31 @@ def safe_streamlit_call(func, *args, **kwargs):
 
 
 class StateManager:
-    """Manages Streamlit session state with type safety."""
+    """Manages Streamlit session state with type safety and thread safety."""
+    
+    # Thread-safe storage for background thread updates
+    _thread_safe_storage: Dict[str, Any] = {}
+    _storage_lock = threading.Lock()
+    
+    @staticmethod
+    def _is_main_thread() -> bool:
+        """Check if we're in the main thread with valid Streamlit context."""
+        try:
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            ctx = get_script_run_ctx()
+            # Need valid context and session_id to be considered main thread
+            return ctx is not None and hasattr(ctx, 'session_id') and ctx.session_id is not None
+        except (ImportError, AttributeError, RuntimeError, TypeError):
+            return False
     
     @staticmethod
     def initialize():
         """Initialize all required session state variables."""
+        # Only initialize in main thread
+        if not StateManager._is_main_thread():
+            logger.warning("StateManager.initialize() called from background thread, skipping")
+            return
+            
         defaults = {
             "batch_results": {},
             "batch_processing": False,
@@ -79,33 +239,71 @@ class StateManager:
     
     @staticmethod
     def get_batch_results() -> Dict[str, Dict[str, Any]]:
-        """Get batch results from session state."""
-        return st.session_state.get("batch_results", {})
+        """Get batch results from session state (thread-safe)."""
+        if StateManager._is_main_thread():
+            return st.session_state.get("batch_results", {})
+        else:
+            # In background thread, use thread-safe storage
+            with StateManager._storage_lock:
+                return StateManager._thread_safe_storage.get("batch_results", {})
     
     @staticmethod
     def set_batch_results(value: Dict[str, Dict[str, Any]]):
-        """Set batch results in session state."""
-        st.session_state["batch_results"] = value
+        """Set batch results in session state (thread-safe)."""
+        if StateManager._is_main_thread():
+            st.session_state["batch_results"] = value
+        else:
+            # In background thread, store in thread-safe storage
+            # Main thread should periodically sync this
+            with StateManager._storage_lock:
+                StateManager._thread_safe_storage["batch_results"] = value
     
     @staticmethod
     def is_processing() -> bool:
-        """Check if batch processing is in progress."""
-        return st.session_state.get("batch_processing", False)
+        """Check if batch processing is in progress (thread-safe)."""
+        if StateManager._is_main_thread():
+            return st.session_state.get("batch_processing", False)
+        else:
+            with StateManager._storage_lock:
+                return StateManager._thread_safe_storage.get("batch_processing", False)
     
     @staticmethod
     def set_processing(value: bool):
-        """Set batch processing status."""
-        st.session_state["batch_processing"] = value
+        """Set batch processing status (thread-safe)."""
+        if StateManager._is_main_thread():
+            st.session_state["batch_processing"] = value
+        else:
+            with StateManager._storage_lock:
+                StateManager._thread_safe_storage["batch_processing"] = value
     
     @staticmethod
     def get_progress_tracker():
-        """Get detailed progress tracker from session state."""
-        return st.session_state.get("detailed_progress_tracker")
+        """Get detailed progress tracker from session state (thread-safe)."""
+        if StateManager._is_main_thread():
+            return st.session_state.get("detailed_progress_tracker")
+        else:
+            with StateManager._storage_lock:
+                return StateManager._thread_safe_storage.get("detailed_progress_tracker")
     
     @staticmethod
     def set_progress_tracker(tracker):
-        """Set detailed progress tracker in session state."""
-        st.session_state["detailed_progress_tracker"] = tracker
+        """Set detailed progress tracker in session state (thread-safe)."""
+        if StateManager._is_main_thread():
+            st.session_state["detailed_progress_tracker"] = tracker
+        else:
+            with StateManager._storage_lock:
+                StateManager._thread_safe_storage["detailed_progress_tracker"] = tracker
+    
+    @staticmethod
+    def sync_to_session_state():
+        """Sync thread-safe storage to session state (call from main thread only)."""
+        if not StateManager._is_main_thread():
+            logger.warning("sync_to_session_state() called from background thread, skipping")
+            return
+            
+        with StateManager._storage_lock:
+            for key, value in StateManager._thread_safe_storage.items():
+                st.session_state[key] = value
 
 
 def display_batch_status():
@@ -162,6 +360,7 @@ def process_single_file_pdf(
     file_hash: str,
     on_progress: Optional[Callable[[int, int], None]] = None,
     on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
+    on_stage_change: Optional[Callable[[int], None]] = None,
 ) -> Dict[str, Any]:
     """
     Process a single PDF file in PDF mode.
@@ -190,6 +389,21 @@ def process_single_file_pdf(
         if cache_status == "completed":
             safe_streamlit_call(st.info, f"📋 {filename} 使用缓存结果")
             try:
+                _emit_cache_progress_updates(
+                    filename,
+                    src_bytes,
+                    cached_result,
+                    on_progress,
+                    on_page_status
+                )
+                
+                # Update stage to composing
+                if on_stage_change:
+                    try:
+                        on_stage_change(2)  # Stage 2: 合成文档
+                    except Exception:
+                        pass
+                
                 result_bytes = pdf_processor.compose_pdf(
                     src_bytes,
                     cached_result["explanations"],
@@ -374,6 +588,14 @@ def process_single_file_pdf(
             file_hash=file_hash,
         )
         
+        # Update stage to composing before calling compose_pdf
+        # This allows users to see the "合成文档" stage while it's actually happening
+        if on_stage_change:
+            try:
+                on_stage_change(2)  # Stage 2: 合成文档
+            except Exception:
+                pass  # Silently fail if callback fails
+        
         result_bytes = pdf_processor.compose_pdf(
             src_bytes,
             explanations,
@@ -443,6 +665,14 @@ def process_single_file_markdown(
         if cache_status == "completed":
             safe_streamlit_call(st.info, f"📋 {filename} 使用缓存结果")
             try:
+                _emit_cache_progress_updates(
+                    filename,
+                    src_bytes,
+                    cached_result,
+                    on_progress,
+                    on_page_status
+                )
+                
                 markdown_content, explanations, failed_pages, _ = pdf_processor.process_markdown_mode(
                     src_bytes=src_bytes,
                     api_key=params["api_key"],
@@ -668,6 +898,14 @@ def process_single_file_html_screenshot(
         if cache_status == "completed":
             safe_streamlit_call(st.info, f"📋 {filename} 使用缓存结果")
             try:
+                _emit_cache_progress_updates(
+                    filename,
+                    src_bytes,
+                    cached_result,
+                    on_progress,
+                    on_page_status
+                )
+                
                 # Generate HTML from cached explanations
                 base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
                 # Use user-configured title if provided, otherwise use filename
@@ -924,6 +1162,14 @@ def process_single_file_html_pdf2htmlex(
         if cache_status == "completed":
             safe_streamlit_call(st.info, f"📋 {filename} 使用缓存结果")
             try:
+                _emit_cache_progress_updates(
+                    filename,
+                    src_bytes,
+                    cached_result,
+                    on_progress,
+                    on_page_status
+                )
+                
                 base_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
                 title = params.get("markdown_title", "").strip() or base_name
                 html_content = pdf_processor.generate_html_pdf2htmlex_document(
@@ -1293,6 +1539,7 @@ def process_single_file_with_progress(
     cached_result: Optional[Dict[str, Any]],
     on_progress: Optional[Callable[[int, int], None]] = None,
     on_page_status: Optional[Callable[[int, str, Optional[str]], None]] = None,
+    on_stage_change: Optional[Callable[[int], None]] = None,
 ) -> Dict[str, Any]:
     """
     Process a single uploaded file with progress callbacks.
@@ -1341,7 +1588,8 @@ def process_single_file_with_progress(
         else:
             return process_single_file_pdf(
                 None, filename, src_bytes, params, cached_result, file_hash,
-                on_progress=on_progress, on_page_status=on_page_status
+                on_progress=on_progress, on_page_status=on_page_status,
+                on_stage_change=on_stage_change
             )
             
     except Exception as e:

@@ -46,8 +46,8 @@ from app.cache_processor import (
 
 
 def setup_page():
-	st.set_page_config(page_title="PDF 讲解流 · Gemini 2.5 Pro", layout="wide")
-	st.title("PDF 讲解流 · Gemini 2.5 Pro")
+	st.set_page_config(page_title="智讲 / PDF-Lecture-AI", layout="wide")
+	st.title("智讲 / PDF-Lecture-AI")
 	st.caption("逐页生成讲解，右侧留白排版，保持原PDF向量内容")
 
 
@@ -204,8 +204,8 @@ def sidebar_form():
 				dpi = st.number_input(
 					"渲染DPI", 
 					min_value=96, 
-					max_value=300, 
-					value=180, 
+					max_value=500, 
+					value=300, 
 					step=12,
 					help="页面渲染质量（仅供LLM）"
 				)
@@ -530,9 +530,17 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 				"json_bytes": None
 			}
 			
-			# Start file processing
-			progress_tracker.start_file(filename)
-			progress_tracker.update_file_stage(filename, 0)  # Stage 0: 给PDF页面截图
+			# Start file processing (only if not already started in concurrent mode)
+			# In concurrent mode, start_file is called before task submission
+			# In sequential mode, we need to call it here
+			if filename in progress_tracker.file_progress:
+				current_status = progress_tracker.file_progress[filename].status
+				if current_status == "waiting":
+					progress_tracker.start_file(filename)
+					progress_tracker.update_file_stage(filename, 0)  # Stage 0: 给PDF页面截图
+			else:
+				progress_tracker.start_file(filename)
+				progress_tracker.update_file_stage(filename, 0)  # Stage 0: 给PDF页面截图
 			
 			# Read file bytes and get cache hash
 			uploaded_file.seek(0)  # Reset file pointer
@@ -541,26 +549,29 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			cached_result = load_result_from_file(file_hash)
 			
 			# Create enhanced progress callback that updates stage
+			stage_1_updated = False  # Track if stage 1 has been updated
 			def enhanced_on_progress(done: int, total: int):
 				"""Enhanced progress callback that updates stage based on progress."""
+				nonlocal stage_1_updated
 				if on_progress:
 					on_progress(done, total)
-				# Update to stage 1 when starting to generate explanations
-				# Stage 0 (screenshot) is done before generate_explanations is called
-				# Stage 1 (LLM generation) happens during generate_explanations
-				if done > 0:
+				# Update to stage 1 when on_progress is first called
+				# This happens when screenshots are done and LLM requests are about to start
+				if not stage_1_updated:
 					progress_tracker.update_file_stage(filename, 1)  # Stage 1: 用LLM生成讲解
+					stage_1_updated = True
+			
+			# Create stage change callback for stage 2 (合成文档)
+			def on_stage_change(stage_index: int):
+				"""Callback to update stage when compose_pdf is about to start."""
+				progress_tracker.update_file_stage(filename, stage_index)
 			
 			# Process file with progress callbacks
 			result = process_single_file_with_progress(
 				src_bytes, filename, params, file_hash, cached_result,
-				on_progress=enhanced_on_progress, on_page_status=on_page_status
+				on_progress=enhanced_on_progress, on_page_status=on_page_status,
+				on_stage_change=on_stage_change
 			)
-			
-			# Update stage to composing (stage 2 happens during compose_pdf)
-			# Note: compose_pdf is called inside process_single_file_with_progress
-			# So we update stage 2 here to indicate final composition is happening
-			progress_tracker.update_file_stage(filename, 2)  # Stage 2: 合成文档
 			
 			# Update result
 			StateManager.get_batch_results()[filename] = result
@@ -597,7 +608,8 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			future_to_file = {}
 			for uploaded_file in uploaded_files:
 				filename = uploaded_file.name
-				# Mark file as processing immediately after submission
+				# Mark file as processing BEFORE submission to ensure state is set
+				# This prevents race condition where task completes before state is updated
 				progress_tracker.start_file(filename)
 				progress_tracker.update_file_stage(filename, 0)  # Stage 0: 给PDF页面截图
 				
@@ -610,7 +622,9 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 				)
 				future_to_file[future] = filename
 			
-			# Immediately render after submitting all tasks
+			# Immediately render after submitting all tasks to show processing state
+			# This ensures UI shows processing state before tasks complete
+			StateManager.sync_to_session_state()
 			progress_tracker.force_render()
 			
 			# Collect results as they complete with periodic UI updates
@@ -649,13 +663,18 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 				# Periodic UI update even if no tasks completed
 				current_time = time.time()
 				if current_time - last_render_time >= render_interval:
+					# Sync thread-safe storage to session state before rendering
+					StateManager.sync_to_session_state()
 					progress_tracker.force_render()
 					last_render_time = current_time
 				else:
 					# Even if not time for full render, try a throttled render
+					# Sync thread-safe storage to session state before rendering
+					StateManager.sync_to_session_state()
 					progress_tracker.render()
 			
-			# Final render
+			# Final render - sync thread-safe storage first
+			StateManager.sync_to_session_state()
 			progress_tracker.force_render()
 	else:
 		# Sequential processing (single file or low concurrency)
@@ -664,13 +683,15 @@ def batch_process_files(uploaded_files: List, params: Dict[str, Any]) -> None:
 			
 			# Create progress callbacks for this file
 			def create_progress_callbacks(fname: str):
+				stage_1_updated = False  # Track if stage 1 has been updated
 				def on_progress(done: int, total: int):
+					nonlocal stage_1_updated
 					progress_tracker.update_file_page_progress(fname, done, total)
-					# Update to stage 1 when starting to generate explanations
-					# Stage 0 (screenshot) is done before generate_explanations is called
-					# Stage 1 (LLM generation) happens during generate_explanations
-					if done > 0:
+					# Update to stage 1 when on_progress is first called
+					# This happens when screenshots are done and LLM requests are about to start
+					if not stage_1_updated:
 						progress_tracker.update_file_stage(fname, 1)  # Stage 1: 用LLM生成讲解
+						stage_1_updated = True
 					progress_tracker.render()
 				
 				def on_page_status(page_index: int, status: str, error: Optional[str]):
@@ -851,6 +872,9 @@ def main():
 
 							try:
 								src_bytes = uploaded_file.read()
+								
+								# Get file hash for cache recall
+								retry_file_hash = get_file_hash(src_bytes, params)
 
 								file_progress = st.progress(0)
 								file_status = st.empty()
@@ -884,6 +908,7 @@ def main():
 									api_base=params.get("api_base"),
 									auto_retry_failed_pages=params.get("auto_retry_failed_pages", True),
 									max_auto_retries=params.get("max_auto_retries", 2),
+									file_hash=retry_file_hash,  # Pass file_hash for page-level cache recall
 									)
 
 									result_bytes = pdf_processor.compose_pdf(
@@ -1375,10 +1400,13 @@ def main():
 					# 定期更新UI（避免过于频繁）
 					current_time = time.time()
 					if current_time - last_render_time >= render_interval:
+						# Sync thread-safe storage to session state before rendering
+						StateManager.sync_to_session_state()
 						progress_tracker.force_render()
 						last_render_time = current_time
 				
-				# 最终渲染
+				# 最终渲染 - sync thread-safe storage first
+				StateManager.sync_to_session_state()
 				progress_tracker.force_render()
 		else:
 			# 顺序处理（单个文件时）- 可以实时更新页面级进度
