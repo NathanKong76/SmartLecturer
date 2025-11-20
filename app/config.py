@@ -84,7 +84,7 @@ class AppConfig:
             raise ValueError(f"Invalid dpi in config: {error}")
         
         # Validate render_mode
-        valid_render_modes = {"text", "markdown", "pandoc", "empty_right"}
+        valid_render_modes = {"text", "markdown", "empty_right"}
         if self.render_mode not in valid_render_modes:
             raise ValueError(
                 f"Invalid render_mode: {self.render_mode}. "

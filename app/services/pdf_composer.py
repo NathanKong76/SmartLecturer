@@ -1115,8 +1115,8 @@ def compose_pdf(src_bytes: bytes, explanations: Dict[int, str], right_ratio: flo
     if not is_valid:
         raise ValueError(f"Invalid parameter: {error_msg}")
     
-    if render_mode not in ("text", "markdown", "pandoc", "empty_right"):
-        raise ValueError(f"Invalid render_mode: {render_mode}. Must be 'text', 'markdown', 'pandoc', or 'empty_right'")
+    if render_mode not in ("text", "markdown", "empty_right"):
+        raise ValueError(f"Invalid render_mode: {render_mode}. Must be 'text', 'markdown', or 'empty_right'")
     
     with open_pdf_document(src_bytes) as src_doc:
         dst_doc = fitz.open()

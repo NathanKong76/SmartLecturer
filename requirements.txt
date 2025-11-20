@@ -1,11 +1,14 @@
-streamlit==1.38.0
+streamlit>=1.39.0
 langchain==0.3.0
 langchain-google-genai==2.0.0
 langchain-openai==0.2.1
 openai==1.52.2
 google-generativeai==0.7.2
 PyMuPDF==1.24.11
-pillow==10.4.0
+pillow>=11.0.0
+# 注意：pyarrow 是 streamlit 的可选依赖，已从 requirements.txt 中移除
+# 如果 Python 3.13 没有预编译 wheel，streamlit 会在没有 pyarrow 的情况下运行
+# 这不会影响 PDF 处理功能，只会影响某些数据可视化功能
 python-dotenv==1.0.1
 tqdm==4.66.5
 markdown==3.6

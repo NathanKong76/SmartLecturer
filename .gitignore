@@ -4,7 +4,11 @@
 .env.development.local
 .env.test.local
 .env.production.local
-
+.iflow
+.claude
+.streamlit
+.venv
+.vscode
 # Python
 __pycache__/
 *.py[cod]

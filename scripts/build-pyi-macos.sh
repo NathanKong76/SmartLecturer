@@ -80,6 +80,7 @@ a = Analysis(
     datas=[
         ('assets', 'assets'),
         ('app', 'app'),
+        ('resource/logo.png', 'resource'),  # 包含图标文件
     ],
     hiddenimports=[
         'streamlit',
@@ -138,13 +139,13 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
-    icon=None,
+    icon='resource/logo.png',
 )
 
 app = BUNDLE(
     exe,
     name='lecturer.app',
-    icon=None,
+    icon='resource/logo.png',
     bundle_identifier='com.lecturer.app',
 )
 

@@ -62,10 +62,32 @@ function Get-WSLDistributions {
         $distros = @()
         $lines = $output | Select-Object -Skip 1
         foreach ($line in $lines) {
-            if ($line -match '^\s*(\S+)\s+(\S+)\s+(.*)') {
-                $name = $matches[1]
-                $version = $matches[2]
-                if ($version -eq "1" -or $version -eq "2") {
+            $trimmed = $line.Trim()
+            if ($trimmed -eq '') {
+                continue
+            }
+            
+            # 使用分割方法解析: [*] NAME STATE VERSION
+            # 例如: "* Ubuntu                 Running                2" 或 "docker-desktop Running 2"
+            $parts = ($trimmed -split '\s+') | Where-Object { $_ -ne '' }
+            
+            if ($parts.Count -ge 3) {
+                $name = $null
+                $version = $null
+                
+                # 如果第一部分是 '*'，则名称在第二部分，版本在最后
+                if ($parts[0] -eq '*') {
+                    if ($parts.Count -ge 4) {
+                        $name = $parts[1]
+                        $version = $parts[$parts.Count - 1]
+                    }
+                } else {
+                    # 否则名称在第一部分，版本在最后
+                    $name = $parts[0]
+                    $version = $parts[$parts.Count - 1]
+                }
+                
+                if ($name -and $version -and ($version -eq "1" -or $version -eq "2")) {
                     $distros += $name
                 }
             }
@@ -85,21 +107,50 @@ function Get-DefaultWSLDistro {
         }
         
         $lines = $output | Select-Object -Skip 1
+        $firstValidDistro = $null
+        
         foreach ($line in $lines) {
-            if ($line -match '^\s*(\S+)\s+(\S+)\s+(.*)') {
-                $name = $matches[1]
-                $version = $matches[2]
-                if ($version -eq "1" -or $version -eq "2") {
-                    # Check if it's the default (marked with *)
-                    if ($line -match '\*') {
+            $trimmed = $line.Trim()
+            if ($trimmed -eq '') {
+                continue
+            }
+            
+            # 使用分割方法解析: [*] NAME STATE VERSION
+            $parts = ($trimmed -split '\s+') | Where-Object { $_ -ne '' }
+            
+            if ($parts.Count -ge 3) {
+                $name = $null
+                $version = $null
+                $isDefault = $false
+                
+                # 如果第一部分是 '*'，则名称在第二部分，版本在最后
+                if ($parts[0] -eq '*') {
+                    if ($parts.Count -ge 4) {
+                        $name = $parts[1]
+                        $version = $parts[$parts.Count - 1]
+                        $isDefault = $true
+                    }
+                } else {
+                    # 否则名称在第一部分，版本在最后
+                    $name = $parts[0]
+                    $version = $parts[$parts.Count - 1]
+                }
+                
+                if ($name -and $version -and ($version -eq "1" -or $version -eq "2")) {
+                    # 如果是默认的（标记了 *），直接返回
+                    if ($isDefault) {
                         return $name
                     }
-                    # Otherwise return first one
-                    return $name
+                    # 否则保存第一个有效的发行版
+                    if (-not $firstValidDistro) {
+                        $firstValidDistro = $name
+                    }
                 }
             }
         }
-        return $null
+        
+        # 如果没有找到标记为默认的，返回第一个有效的发行版
+        return $firstValidDistro
     } catch {
         return $null
     }
@@ -124,16 +175,31 @@ echo "VERSION_CODENAME=\$VERSION_CODENAME"
         
         $result = @{}
         foreach ($line in $output) {
-            if ($line -match '^ID=(.+)$') {
-                $result['ID'] = $matches[1]
-            } elseif ($line -match '^VERSION_ID="?([^"]+)"?$') {
+            $trimmed = $line.Trim()
+            if ($trimmed -eq '') {
+                continue
+            }
+            
+            # 处理 ID=ubuntu 格式
+            if ($trimmed -match '^ID=(.+)$') {
+                $result['ID'] = $matches[1].Trim('"')
+            }
+            # 处理 VERSION_ID="24.04" 或 VERSION_ID=24.04 格式
+            elseif ($trimmed -match '^VERSION_ID=["\s]*([^"\s]+)["\s]*$') {
                 $result['VERSION_ID'] = $matches[1]
-            } elseif ($line -match '^VERSION_CODENAME=(.+)$') {
-                $result['VERSION_CODENAME'] = $matches[1]
+            }
+            # 处理 VERSION_CODENAME=noble 格式
+            elseif ($trimmed -match '^VERSION_CODENAME=(.+)$') {
+                $result['VERSION_CODENAME'] = $matches[1].Trim('"')
             }
         }
         
-        return $result
+        # 如果至少获取到了 ID，就返回结果（即使版本信息不完整）
+        if ($result.Count -gt 0) {
+            return $result
+        }
+        
+        return $null
     } catch {
         return $null
     }
@@ -178,46 +244,100 @@ function Install-Pdf2htmlEXInWSL {
     
     Write-Info "正在在 WSL ($DistroName) 中安装 pdf2htmlEX..."
     
-    $installScript = @"
-set -e
-cd ~
-mkdir -p Downloads
-cd Downloads
-
-# Download .deb package
-echo "正在下载 pdf2htmlEX..."
-wget -O pdf2htmlEX.deb "$DebUrl" || curl -L -o pdf2htmlEX.deb "$DebUrl"
-
-# Install
-echo "正在安装 pdf2htmlEX..."
-sudo apt update
-sudo apt install -y ./pdf2htmlEX.deb
-
-# Verify installation
-echo "验证安装..."
-pdf2htmlEX --version || pdf2htmlEX -v
-
-# Cleanup
-rm -f pdf2htmlEX.deb
-
-echo "安装完成！"
-"@
+    $allOutput = @()
+    $failed = $false
     
     try {
-        $output = wsl -d $DistroName -e bash -c $installScript 2>&1
-        $exitCode = $LASTEXITCODE
+        # 设置 UTF-8 编码环境变量
+        $env:WSL_UTF8 = "1"
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         
-        if ($exitCode -eq 0) {
-            Write-Success "pdf2htmlEX 安装成功！"
-            Write-Host $output
-            return $true
-        } else {
-            Write-Error "安装失败，退出代码: $exitCode"
-            Write-Host $output
+        # 步骤 1: 准备目录
+        Write-Info "准备下载目录..."
+        $bashCmd = "cd ~ && mkdir -p Downloads && cd Downloads && pwd && echo SUCCESS"
+        $output = & wsl.exe -d $DistroName -e bash -c $bashCmd 2>&1
+        $outputStr = if ($output -is [array]) { $output -join "`n" } else { [string]$output }
+        $allOutput += $outputStr
+        Write-Host $outputStr
+        if (-not $outputStr -or $outputStr -notmatch 'SUCCESS') {
+            Write-Error "无法创建下载目录"
+            Write-Host "实际输出: $outputStr"
             return $false
+        }
+        
+        # 步骤 2: 下载 .deb 包
+        Write-Info "正在下载 pdf2htmlEX..."
+        $downloadCmd = "cd ~/Downloads && (wget -O pdf2htmlEX.deb '$DebUrl' 2>&1 || curl -L -o pdf2htmlEX.deb '$DebUrl' 2>&1) && echo DOWNLOAD_SUCCESS"
+        $output = & wsl.exe -d $DistroName -e bash -c $downloadCmd 2>&1
+        $outputStr = if ($output -is [array]) { $output -join "`n" } else { [string]$output }
+        $allOutput += $outputStr
+        Write-Host $outputStr
+        if (-not $outputStr -or $outputStr -notmatch 'DOWNLOAD_SUCCESS') {
+            Write-Error "下载失败"
+            Write-Host "实际输出: $outputStr"
+            return $false
+        }
+        
+        # 检查文件是否存在
+        $checkCmd = "cd ~/Downloads && test -f pdf2htmlEX.deb && echo FILE_EXISTS || echo FILE_NOT_EXISTS"
+        $output = & wsl.exe -d $DistroName -e bash -c $checkCmd 2>&1
+        $outputStr = if ($output -is [array]) { $output -join "`n" } else { [string]$output }
+        $allOutput += $outputStr
+        Write-Host $outputStr
+        if ($outputStr -notmatch 'FILE_EXISTS') {
+            Write-Error "下载的文件不存在"
+            return $false
+        }
+        
+        # 步骤 3: 更新 apt
+        Write-Info "正在更新软件包列表..."
+        $aptCmd = "sudo apt update 2>&1; exit_code=`$?; echo APT_UPDATE_EXIT_`$exit_code"
+        $output = & wsl.exe -d $DistroName -e bash -c $aptCmd 2>&1
+        $outputStr = if ($output -is [array]) { $output -join "`n" } else { [string]$output }
+        $allOutput += $outputStr
+        Write-Host $outputStr
+        if ($outputStr -match 'APT_UPDATE_EXIT_([1-9])') {
+            Write-Warning "apt update 失败，但继续尝试安装..."
+        }
+        
+        # 步骤 4: 安装 .deb 包
+        Write-Info "正在安装 pdf2htmlEX..."
+        $installCmd = "cd ~/Downloads && sudo apt install -y ./pdf2htmlEX.deb 2>&1; exit_code=`$?; echo INSTALL_EXIT_`$exit_code"
+        $output = & wsl.exe -d $DistroName -e bash -c $installCmd 2>&1
+        $outputStr = if ($output -is [array]) { $output -join "`n" } else { [string]$output }
+        $allOutput += $outputStr
+        Write-Host $outputStr
+        if ($outputStr -match 'INSTALL_EXIT_([1-9])') {
+            Write-Error "安装失败"
+            $failed = $true
+        }
+        
+        # 步骤 5: 验证安装
+        Write-Info "验证安装..."
+        $verifyCmd = "pdf2htmlEX --version 2>&1 || pdf2htmlEX -v 2>&1 || echo VERSION_CHECK_FAILED"
+        $output = & wsl.exe -d $DistroName -e bash -c $verifyCmd 2>&1
+        $outputStr = if ($output -is [array]) { $output -join "`n" } else { [string]$output }
+        $allOutput += $outputStr
+        Write-Host $outputStr
+        
+        # 步骤 6: 清理
+        Write-Info "清理临时文件..."
+        $cleanupCmd = "rm -f ~/Downloads/pdf2htmlEX.deb"
+        $output = & wsl.exe -d $DistroName -e bash -c $cleanupCmd 2>&1
+        $outputStr = if ($output -is [array]) { $output -join "`n" } else { [string]$output }
+        $allOutput += $outputStr
+        
+        if ($failed) {
+            Write-Error "安装过程中出现错误"
+            return $false
+        } else {
+            Write-Success "pdf2htmlEX 安装成功！"
+            return $true
         }
     } catch {
         Write-Error "安装过程中发生错误: $_"
+        Write-Host "完整输出:"
+        Write-Host ($allOutput -join "`n")
         return $false
     }
 }
@@ -317,27 +437,34 @@ if ($Distro -eq "") {
     }
 }
 
-# Get Ubuntu version
+# Get Ubuntu version (可选，因为所有版本都使用同一个包)
 Write-Host ""
-Write-Info "检测 Ubuntu 版本..."
+Write-Info "检测 Ubuntu 版本（可选步骤）..."
 $osInfo = Get-UbuntuVersion -DistroName $Distro
 
-if (-not $osInfo) {
-    Write-Error "无法检测 Ubuntu 版本信息"
-    exit 1
+$versionId = $null
+$codename = $null
+
+if ($osInfo) {
+    if ($osInfo['ID'] -ne "ubuntu") {
+        Write-Warning "检测到的发行版不是 Ubuntu: $($osInfo['ID'])"
+        Write-Info "此脚本主要为 Ubuntu 设计，但将尝试安装兼容版本"
+    }
+    
+    $versionId = $osInfo['VERSION_ID']
+    $codename = $osInfo['VERSION_CODENAME']
+    
+    if ($versionId -or $codename) {
+        Write-Success "检测到: $($osInfo['ID']) $versionId ($codename)"
+    } else {
+        Write-Warning "无法获取完整版本信息，将使用默认包"
+    }
+} else {
+    Write-Warning "无法检测版本信息，将使用默认的 Ubuntu focal 包"
+    Write-Info "（所有 Ubuntu 版本都使用同一个兼容包，这不会影响安装）"
 }
 
-if ($osInfo['ID'] -ne "ubuntu") {
-    Write-Warning "检测到的发行版不是 Ubuntu: $($osInfo['ID'])"
-    Write-Info "此脚本主要为 Ubuntu 设计，但将尝试安装兼容版本"
-}
-
-$versionId = $osInfo['VERSION_ID']
-$codename = $osInfo['VERSION_CODENAME']
-
-Write-Success "检测到: Ubuntu $versionId ($codename)"
-
-# Get .deb URL
+# Get .deb URL (如果版本检测失败，会使用默认的 focal 包)
 $debUrl = Get-Pdf2htmlEXDebUrl -VersionId $versionId -Codename $codename
 Write-Info "下载 URL: $debUrl"
 

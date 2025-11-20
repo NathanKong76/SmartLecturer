@@ -12,11 +12,14 @@ ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 ENV STREAMLIT_SERVER_HEADLESS=true
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
-# 安装系统依赖
+# 安装系统依赖和 Python 3.13
 RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3.10-dev \
-    python3.10-distutils \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update && apt-get install -y \
+    python3.13 \
+    python3.13-dev \
+    python3.13-distutils \
     python3-pip \
     wget \
     curl \
@@ -66,8 +69,10 @@ COPY docker/entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 
 # 安装Python依赖
-RUN python3.10 -m pip install --upgrade pip \
-    && python3.10 -m pip install --no-cache-dir -r /app/requirements.txt
+# 安装 pip（Python 3.13 需要手动安装 pip）
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.13 \
+    && python3.13 -m pip install --upgrade pip \
+    && python3.13 -m pip install --no-cache-dir -r /app/requirements.txt
 
 # 创建必要的目录
 RUN mkdir -p /app/logs /app/temp /app/sync_html_output

@@ -6,7 +6,7 @@
 
 ## 系统要求
 
-- **Python**: 3.10 或更高版本
+- **Python**: 3.13
 - **操作系统**: Windows（PowerShell）或 Linux/macOS
 - **API Key**: 至少配置一种 LLM 凭据
   - Google Gemini（`GEMINI_API_KEY`）
@@ -186,7 +186,7 @@ chmod +x scripts/install-pdf2htmlex-linux.sh
 ### 安装问题
 
 **Q: 安装脚本提示找不到 Python**
-A: 请先安装 Python 3.10 或更高版本：https://www.python.org/downloads/
+A: 请先安装 Python 3.13：https://www.python.org/downloads/release/python-3130/
 
 **Q: 安装依赖时出错**
 A: 确保网络连接正常，或尝试使用国内镜像：

@@ -34,19 +34,20 @@ echo ""
 # Check Python installation
 info "检查 Python 安装..."
 if ! command -v python3 &> /dev/null; then
-    error "未找到 Python 3，请先安装 Python 3.10 或更高版本"
+    error "未找到 Python 3，请先安装 Python 3.13"
     exit 1
 fi
 
 PYTHON_VERSION=$(python3 --version 2>&1)
 success "找到 Python: $PYTHON_VERSION"
 
-# Check Python version (3.10+)
+# Check Python version (必须是 3.13)
 PYTHON_MAJOR=$(python3 -c "import sys; print(sys.version_info.major)")
 PYTHON_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
 
-if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]); then
-    error "需要 Python 3.10 或更高版本，当前版本: $PYTHON_VERSION"
+if [ "$PYTHON_MAJOR" -ne 3 ] || [ "$PYTHON_MINOR" -ne 13 ]; then
+    error "需要 Python 3.13，当前版本: $PYTHON_VERSION"
+    error "请安装 Python 3.13：https://www.python.org/downloads/release/python-3130/"
     exit 1
 fi
 

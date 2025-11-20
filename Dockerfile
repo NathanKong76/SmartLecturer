@@ -7,11 +7,14 @@ ENV PYTHONUNBUFFERED=1
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 
-# 安装系统依赖
+# 安装系统依赖和 Python 3.13
 RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3.10-dev \
-    python3.10-distutils \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update && apt-get install -y \
+    python3.13 \
+    python3.13-dev \
+    python3.13-distutils \
     python3-pip \
     wget \
     curl \
@@ -56,8 +59,10 @@ WORKDIR /app
 
 # 复制requirements.txt并安装Python依赖
 COPY requirements.txt /app/
-RUN python3.10 -m pip install --upgrade pip \
-    && python3.10 -m pip install --no-cache-dir -r requirements.txt
+# 安装 pip（Python 3.13 需要手动安装 pip）
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.13 \
+    && python3.13 -m pip install --upgrade pip \
+    && python3.13 -m pip install --no-cache-dir -r requirements.txt
 
 # 最终阶段
 FROM ubuntu:22.04
@@ -76,8 +81,11 @@ ENV STREAMLIT_SERVER_BASE_URL_HOST=localhost
 
 # 安装运行时依赖（包括pdf2htmlEX的依赖）
 RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3.10-distutils \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update && apt-get install -y \
+    python3.13 \
+    python3.13-distutils \
     python3-pip \
     fontforge \
     fonts-liberation \
@@ -117,7 +125,7 @@ RUN useradd -m -u 1000 appuser && \
 WORKDIR /app
 
 # 复制Python环境
-COPY --from=builder /usr/local/lib/python3.10 /usr/local/lib/python3.10
+COPY --from=builder /usr/local/lib/python3.13 /usr/local/lib/python3.13
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # 复制应用文件

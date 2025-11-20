@@ -237,9 +237,9 @@ class SidebarForm:
         # Render mode
         render_mode = st.selectbox(
             "右栏渲染方式",
-            ["text", "markdown", "pandoc"],
+            ["text", "markdown"],
             index=1,
-            help="text: 普通文本\nmarkdown: Markdown渲染\npandoc: 高质量PDF (需Pandoc)"
+            help="text: 普通文本\nmarkdown: Markdown渲染"
         )
 
         st.divider()

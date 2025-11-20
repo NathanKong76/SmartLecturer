@@ -29,7 +29,7 @@
 
 ## 环境要求
 
-- Python 3.10+
+- Python 3.13
 - Windows（PowerShell）或 Linux/macOS
 - 至少配置一种 LLM：
   - Google Gemini（环境变量 `GEMINI_API_KEY`）

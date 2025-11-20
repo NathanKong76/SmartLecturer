@@ -5,8 +5,19 @@ import json
 import zipfile
 import hashlib
 import tempfile
+import sys
 from typing import Optional, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+
+# 确保可以以包形式导入 `app.*`（将项目根目录加入 sys.path）
+# 必须在所有 app.* 导入之前执行
+try:
+    _CURRENT_DIR = os.path.abspath(os.path.dirname(__file__))
+    _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
+    if _PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, _PROJECT_ROOT)
+except Exception:
+    pass
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -18,18 +29,6 @@ from app.ui_helpers import (
 )
 
 load_dotenv()
-
-
-# 确保可以以包形式导入 `app.*`（将项目根目录加入 sys.path）
-import sys
-import os as _os
-try:
-    _CURRENT_DIR = _os.path.abspath(_os.path.dirname(__file__))
-    _PROJECT_ROOT = _os.path.dirname(_CURRENT_DIR)
-    if _PROJECT_ROOT not in sys.path:
-        sys.path.insert(0, _PROJECT_ROOT)
-except Exception:
-    pass
 
 
 # Cache processing functions moved to app/cache_processor.py to avoid circular imports
@@ -98,13 +97,11 @@ def sidebar_form():
 			with col2:
 				font_size = st.number_input("讲解字体大小", min_value=10, max_value=24, value=14, step=1, help="讲解文字的字体大小")
 			
-			col1, col2 = st.columns(2)
-			with col1:
-				html_column_count = st.slider("分栏数量", 1, 3, 2, 1, help="讲解内容的分栏数量，类似Word分栏排版")
-			with col2:
-				html_column_gap = st.slider("栏间距(px)", 10, 40, 20, 2, help="分栏之间的间距")
+			# 分栏相关参数使用默认值
+			html_column_count = 2
+			html_column_gap = 20
+			html_show_column_rule = True
 			
-			html_show_column_rule = st.checkbox("显示栏间分隔线", value=True, help="在分栏之间显示分隔线")
 			markdown_title = st.text_input("文档标题", value="PDF文档讲解", help="HTML文档的标题（留空则使用文件名）")
 			embed_images = True
 			st.divider()
@@ -256,24 +253,23 @@ def sidebar_form():
 				max_auto_retries = 0
 		
 		# ============================================
-		# 5. 高级排版配置 - 默认折叠
+		# 5. 高级排版配置 - 仅PDF模式显示
 		# ============================================
-		with st.expander("🎨 高级排版配置", expanded=False):
-			# PDF模式专属参数
-			if output_mode == "PDF讲解版":
+		if output_mode == "PDF讲解版":
+			with st.expander("🎨 高级排版配置", expanded=False):
 				col1, col2 = st.columns(2)
 				with col1:
 					right_ratio = st.slider(
-						"右侧留白比例", 
+						"右侧留白比例",
 						0.2, 0.6, 0.48, 0.01,
 						help="右侧讲解区域占页面宽度比例"
 					)
 				with col2:
 					font_size = st.number_input(
-						"右栏字体大小", 
-						min_value=8, 
-						max_value=20, 
-						value=20, 
+						"右栏字体大小",
+						min_value=8,
+						max_value=20,
+						value=20,
 						step=1,
 						help="讲解文字的字体大小"
 					)
@@ -281,13 +277,13 @@ def sidebar_form():
 				col1, col2 = st.columns(2)
 				with col1:
 					line_spacing = st.slider(
-						"讲解文本行距", 
+						"讲解文本行距",
 						0.6, 2.0, 1.2, 0.1,
 						help="行与行之间的距离"
 					)
 				with col2:
 					column_padding = st.slider(
-						"栏内边距", 
+						"栏内边距",
 						2, 16, 10, 1,
 						help="控制每栏左右内边距"
 					)
@@ -302,9 +298,9 @@ def sidebar_form():
 					except ValueError:
 						default_index = 0
 					cjk_font_name = st.selectbox(
-						"CJK 字体", 
-						font_options, 
-						index=default_index, 
+						"CJK 字体",
+						font_options,
+						index=default_index,
 						help="选择用于显示中文的字体"
 					)
 				except Exception as e:
@@ -312,19 +308,19 @@ def sidebar_form():
 					cjk_font_name = "SimHei"
 				
 				render_mode = st.selectbox(
-					"右栏渲染方式", 
-					["text", "markdown", "pandoc"], 
+					"右栏渲染方式",
+					["text", "markdown"],
 					index=1,
-					help="text: 普通文本\nmarkdown: Markdown渲染\npandoc: 高质量PDF (需Pandoc)"
+					help="text: 普通文本\nmarkdown: Markdown渲染"
 				)
-			else:
-				# 非PDF模式的默认值
-				right_ratio = 0.48
-				font_size = 20
-				line_spacing = 1.2
-				column_padding = 10
-				cjk_font_name = "SimHei"
-				render_mode = "markdown"
+		else:
+			# 非PDF模式的默认值
+			right_ratio = 0.48
+			font_size = 20
+			line_spacing = 1.2
+			column_padding = 10
+			cjk_font_name = "SimHei"
+			render_mode = "markdown"
 		
 		# ============================================
 		# 6. 讲解风格配置 - 所有模式通用

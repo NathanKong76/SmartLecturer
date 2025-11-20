@@ -80,6 +80,7 @@ a = Analysis(
     datas=[
         ('assets', 'assets'),
         ('app', 'app'),
+        ('resource/logo.png', 'resource'),  # 包含图标文件
     ],
     hiddenimports=[
         'streamlit',
@@ -138,6 +139,7 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
+    icon='resource/logo.png',
 )
 
 coll = COLLECT(
